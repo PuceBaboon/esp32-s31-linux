@@ -1,0 +1,5 @@
+CONFIG_EXAMPLE_A2DP_SINK_OUTPUT_IDLE=y
+# The ESP32-S31 controller routes BTDM state directly into the in-controller
+# coexist scheduler and does not implement Bluedroid's external-controller
+# coexist-status VSC (opcode 0xfc82).
+# CONFIG_BT_BLUEDROID_ESP_COEX_VSC is not set
