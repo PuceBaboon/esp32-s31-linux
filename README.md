@@ -1,11 +1,12 @@
 # Linux 6.18 for ESP32-S31
+
 MMU RV32 Linux running natively on an ESP32-S31 microcontroller.
 
 Module tested: ESP32-S31-WROOM-3 E1H16R16V (ESP32-S31 Core Board/Korvo).
 
 <p align="center">
   <img src="docs/bootlog.png"
-       alt="Linux 6.12 booted on an ESP32-S31 development board"
+       alt="Linux booted on an ESP32-S31 development board"
        width="850">
 </p>
 
@@ -20,19 +21,25 @@ Install `esptool`, Espressif's tool for flashing ESP32s:
 $ pip install esptool
 ```
 
-Then download the binaries in [Release](https://github.com/GrieferPig/esp32-s31-linux/releases), connect your board through USB-UART, and flash the board per the provided command below (change `/dev/ttyUSB0` to your actual serial device):
+Then download the binaries in [Release](https://github.com/GrieferPig/esp32-s31-linux/releases), connect your board through USB-UART, and flash the board per the provided command below (change `/dev/ttyUSB0` to your actual serial device). The persist image is written only for a first installation; omit both `erase-flash` and `persist.jffs2` when updating an existing board so saved configuration is retained.
 
 ```bash
 $ esptool -p /dev/ttyUSB0 -b 2000000 erase-flash
 $ esptool -p /dev/ttyUSB0 -b 2000000 write-flash \
     --flash-mode dio --flash-freq 80m --flash-size 16MB \
-    0x2000 bootloader.bin \
-    0x8000 partition-table.bin \
-    0x20000 hello_world.bin \
-    0x220000 fw_payload.bin \
-    0x400000 xipImage \
-    0xA00000 rootfs.sqfs
+    0x002000 spl_app.bin \
+    0x100000 u-boot.itb \
+    0x300000 esp32s31_generic.dtb \
+    0x310000 radio.sqfs \
+    0x500000 xipImage \
+    0xB30000 persist.jffs2 \
+    0xBD0000 rootfs.sqfs
 ```
+
+The authoritative addresses and artifact names are kept in
+[`configs/esp32s31-layout.cfg`](configs/esp32s31-layout.cfg). A source checkout
+can build and update a board with `make all`, `make persist`, and
+`make flash-all`; `flash-all` deliberately preserves the persist partition.
 
 ## Porting progress
 
@@ -42,80 +49,99 @@ $ esptool -p /dev/ttyUSB0 -b 2000000 write-flash \
 |---|---|
 | Buildroot rootfs | 🟢 Stable |
 | Reboot | 🟢 Stable |
-| Poweroff | 🔴 Not Implemented |
+| Poweroff | 🟡 Experimental — orderly shutdown into untimed PMU deep sleep; board power measurement pending |
 | Linux native wireless | 🟡 Experimental |
 | - WiFi | 🟡 Experimental |
-| - Bluetooth Dual Mode | 🟡 Experimental |
+| - Bluetooth controller / Classic A2DP | 🟡 Experimental |
 | Dual core SMP | 🟡 Experimental |
+| CPU frequency / idle | 🟡 Experimental — shared OPPs and guarded SMP WFI |
+| Suspend / resume | 🟡 Experimental — Wi-Fi STA timer-wake/reconnect passes; AP needs userspace restart, Bluetooth recovery remains unverified |
 
 ### Peripheral Drivers
 
-> Note: There has been a major CLIC driver change since 8/21/26's dual hart SMP commit, these drivers below haven't been tested since then (unless marked otherwise). The statuses below show their state before the CLIC driver change.
+> The table is a support-level summary. Interfaces, behavior and limitations
+> are defined in the [technical reference manual](docs/README.md).
 
 | Feature | Status |
 |---|---|
 | AXI GDMA | 🟡 Experimental |
 | AHB GDMA | 🟡 Experimental |
-| Cache driver | 🟡 Experimental (Tested since SMP) |
+| Cache driver | 🟡 Experimental |
 | TRNG | 🟡 Experimental |
 | eFuse | 🟡 Experimental |
 | Watchdog | 🟡 Experimental |
 | PWM, counter, analog peripherals | 🟡 Experimental |
-| CLIC/CLINT interrupt driver | 🟡 Experimental (Tested since SMP) |
-| Flash MTD driver | 🟡 Experimental (Tested since SMP) |
-| Timers | 🟠 WIP |
-| Clock tree | 🟠 WIP |
-| Security accelerators | 🟠 WIP |
-| LP subsystem & IPC | 🔴 Not Implemented |
-| PMP/APM | 🔴 Not Implemented (properly) |
+| CLIC/CLINT interrupt driver | 🟡 Experimental |
+| Flash MTD driver | 🟡 Experimental |
+| Timers | 🟡 Experimental |
+| Clock tree | 🟡 Experimental |
+| Security accelerators | 🟡 Experimental — AES, SHA, RSA and ECDH drivers |
+| LP subsystem & IPC | 🟡 Experimental — remoteproc and mailbox ABI v2 |
+| PMP/APM | 🟠 WIP |
 
 
 ### Connectivity Drivers
 | Feature | Status |
 |---|---|
-| UART0 console | 🟢 Stable (Tested since SMP) |
-| UART1/2 | 🟡 Experimental |
+| UART0 console | 🟢 Stable |
+| UART1/2/3 | 🟡 Experimental |
 | GMAC Ethernet | 🟡 Experimental |
 | SDMMC | 🟡 Experimental |
-| GPIO | 🟡 Experimental (Tested since SMP) |
+| GPIO | 🟡 Experimental |
 | pinctrl/GPIO Matrix | 🟡 Experimental |
-| USB | 🟠 WIP |
-| I2C | 🔴 Not Implemented |
-| I2S | 🔴 Not Implemented |
-| SPI | 🔴 Not Implemented |
+| USB | 🟡 Experimental |
+| I2C | 🟡 Experimental |
+| I2S | 🟡 Experimental |
+| GPSPI | 🟡 Experimental |
+| TWAI / CAN-FD | 🟡 Experimental |
 | RMT | 🔴 Not Implemented |
-| USB Serial/JTAG | 🔴 Not Implemented |
+| USB Serial/JTAG | 🟡 Experimental |
 
 
-> 🟢 **Stable** — Fully tested and working | 🟡 **Experimental** — Seems working; not thoroughly tested | 🟠 **WIP** - Functions not fully implemented
+> 🟢 **Stable** — Default supported path | 🟡 **Experimental** — Interface is
+> available with documented limitations | 🟠 **WIP** — Partial interface |
+> 🔴 **Not Implemented** — No supported interface
+
+Wi-Fi AP/AP+STA, receive-only monitor and firmware PEAP/EAP-TLS provisioning,
+long I2C messages, DMA-backed SPI target transfers and configurable I2S/TDM
+DAIs are implemented with partial board acceptance. Open AP+STA passes both
+data paths; connected BLE recovery passes three suspend cycles, and both I2S
+controllers pass bidirectional S16_LE stereo checks at 8/16/48 kHz after
+clock synchronization. Enterprise authentication remains unverified. See the
+[advanced Wi-Fi guide](docs/en/api-guides/wifi-advanced.md),
+[peripheral reference](docs/en/api-reference/peripherals/index.md) and
+[support matrix](docs/en/resources/support-matrix.md) for limits. Radio core
+ABI v4 requires a matching payload ABI v2; rebuild and deploy them together.
 
 ## Build Instructions
 
-Refer to the [Build Instructions](docs/build.md).
+Refer to the [Build Instructions](docs/en/get-started/build-from-source.md).
 
-## S31 Quirks
+The full document index is the
+[ESP32-S31 Linux Technical Reference Manual](docs/README.md).
 
-(For more hardware references, see `docs/` folder)
+## Standard Linux userspace
 
-This port was done before S31 TRM is available, therefore these guessworks were made:
+The root filesystem uses the upstream Linux control planes for native S31
+drivers: `wpa_supplicant`/`wpa_cli` for Wi-Fi, a BTstack A2DP sink plus BLE
+GATT peripheral over `/dev/s31-hci` for Bluetooth, and libgpiod 2.x for GPIO
+character devices. Its direct H4 transport is self-contained; BlueZ and its
+D-Bus/GLib audio-control dependency chain are not selected. See
+[Standard userspace interfaces](docs/en/api-reference/userspace/index.md).
 
-### CLIC v. PLIC v. CLINT
+Run `esp32-config` for the `dialog`-based configuration interface. Persistent
+policy lives in `/etc/esp32-conf`, while radio and GPIO operations continue
+to use the standard Linux tools above. See the
+[esp32-config reference](docs/en/resources/configuration.md).
 
-S31 uses CLIC and CLINT similar to P4. Linux expects PLIC. Therefore a custom CLIC driver is needed. I referenced [this CLIC patch](https://github.com/litex-hub/linux-on-litex-vexriscv/pull/438) from [disdi](https://github.com/disdi) to get the CLIC working.
+## Architecture notes
 
-Also, standard RISC-V interrupt CSRs are not usable, presumably because, from P4's TRM, CLINT interrupts are routed to CLIC and `mtvec.MODE` is hardwired to `0x3` (CLIC mode). Patches needed to make OpenSBI interrupts work.
-
-### S mode
-
-S31's supervisor mode is not standard and has absolutely no usage in ESP-IDF so a lot of these CSR uses were mostly guessed from either P4's TRM or CSR probing (see `docs/`). For example, the use of `sclicbase(?)` and the lack of `sie`.
-
-S31 implemented [SCLIC (Supervisor CLIC?)](https://esp32.com/viewtopic.php?t=48188) which is confusing since there is no known standardization; According to all laws of esp-idf, `mcliccfg.NMBITS` is not writable. ***IT IS WRITABLE!*** And setting it to `0b01` enables writes to the `clicintattr[i].MODE` field and thus enabling the use of S-mode interrupts.
-
-### OpenSBI and Linux XIP
-
-To save the *precious* 16MB PSRAM memory, OpenSBI was modified to use XIP in flash and internal SRAM (hence the `3915901 KB` firmware size in OpenSBI banner, since flash and SRAM mappings are not continuous).
-
-In mainline linux, XIP support on RISC-V was removed, so 6.12 was used instead which has proper XIP support. 
+The HP harts use native CLIC interrupt delivery. Linux runs in S-mode with
+native S-mode IPI and SYSTIMER paths, while OpenSBI retains M-mode boot, HSM and
+reset services. Linux 6.18 executes its XIP text from flash and keeps writable
+state in RAM. See [System architecture](docs/en/api-reference/system/overview.md),
+[Interrupts and SMP](docs/en/api-reference/system/interrupts-smp.md), and
+[Boot and storage](docs/en/api-reference/system/boot-chain.md) for the current contracts.
 
 ## FAQ
 
@@ -128,4 +154,3 @@ Edit: *SMP support is added.* Espressif's radio blobs exposes a set of OSI (OS i
 I noticed folks on [Hacker News](https://news.ycombinator.com/item?id=49087499) questioning the use of AI-generated code. For transparency:
 
 - Yes, it is heavily agent-assisted. It do work on real S31 dev boards (there's console output above and binary releases to prove that.) I understand the esp32 microcontroller architecture to some extent, but I barely know how to port Linux to other RISC-V platforms; what I did is to tell the agent something like "Go implement an IPC transport that uses a shared SRAM buffer and an IPC interrupt doorbell" or "sdmmc uses designware ip; search esp-idf usage and port the existing Linux driver over." An AI agent on its own would never discover S31's bespoke hardware behavior without my guidance, for example, that the register `mcliccfg` has writable bits, despite esp-idf saying otherwise. However I admit that AI assistance is the direct reason why I am able to progress this fast, and I did learn a lot about kernel development during the process.
-
