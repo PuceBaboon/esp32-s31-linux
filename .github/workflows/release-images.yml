@@ -141,19 +141,6 @@ jobs:
           ! grep -q 'esp\.' build/release-libc-disassembly.txt
           echo "All core artifacts verified OK"
 
-      - name: Gate and package radio redistribution
-        run: |
-          grant=release-legal/radio/REDISTRIBUTION_GRANT
-          source_archive=release-legal/radio/CORRESPONDING_SOURCE.tar.xz
-          if [ ! -s "$grant" ] || [ ! -s "$source_archive" ]; then
-            echo "::error::Radio releases require $grant and $source_archive"
-            echo "::error::A single .ko is a technical boundary, not a license grant"
-            exit 1
-          fi
-          tools/build_radio_bundle.sh --release \
-            --grant "$grant" --source-archive "$source_archive"
-          test -s build/radio-package/esp32s31-radio-release.tar.xz
-
       - name: Package BTstack notices
         run: |
           make btstack-notices
@@ -187,7 +174,6 @@ jobs:
             build/radio.sqfs \
             build/xipImage \
             build/rootfs.sqfs \
-            build/radio-package/esp32s31-radio-release.tar.xz \
             build/btstack-s31-notices.tar.xz \
             build/coremark/coremark.exe \
             --title "$RELEASE_TITLE" \
