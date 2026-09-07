@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
+#define _GNU_SOURCE
 #include <errno.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -16,6 +18,7 @@ extern uint32_t s31_fpu_hold_signal(uint32_t value, pid_t pid);
 extern uint32_t s31_hwloop_setupi(void);
 extern uint32_t s31_hwloop_split_imm(void);
 extern uint32_t s31_hwloop_split_reg(void);
+extern void s31_hwloop_complete_yield(volatile uint32_t *counter);
 extern void s31_hwloop_yield(volatile uint32_t *counter);
 extern void s31_hwloop_signal(volatile uint32_t *counter, pid_t pid);
 extern void s31_pie_add_u32(const uint32_t *a, const uint32_t *b,
@@ -219,6 +222,63 @@ static int all_hwloop_instruction_tests(void)
 	return 0;
 }
 
+static int completed_hwloop_worker(unsigned int id)
+{
+	cpu_set_t mask;
+	unsigned int iteration;
+
+	CPU_ZERO(&mask);
+	CPU_SET(0, &mask);
+	if (sched_setaffinity(0, sizeof(mask), &mask)) {
+		perror("CPU0 sched_setaffinity");
+		return 1;
+	}
+
+	for (iteration = 0; iteration < 200; iteration++) {
+		volatile uint32_t count = 0;
+
+		s31_hwloop_complete_yield(&count);
+		if (count != 64) {
+			fprintf(stderr,
+				"CPU0 worker %u: completed HWLoop count %u at %u\n",
+				id, (unsigned int)count, iteration);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int completed_hwloop_switch_tests(void)
+{
+	pid_t children[2];
+	int status;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(children); i++) {
+		children[i] = fork();
+		if (children[i] < 0) {
+			perror("CPU0 HWLoop fork");
+			return -1;
+		}
+		if (!children[i])
+			_exit(completed_hwloop_worker(i + 1));
+	}
+
+	for (i = 0; i < ARRAY_SIZE(children); i++) {
+		if (waitpid(children[i], &status, 0) < 0) {
+			perror("CPU0 HWLoop waitpid");
+			return -1;
+		}
+		if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+			fprintf(stderr, "CPU0 completed HWLoop worker %u failed, status=%04x\n",
+				i, status);
+			return -1;
+		}
+	}
+	puts("Xesploop: completed-loop CPU0 context switches PASS");
+	return 0;
+}
+
 static uint64_t carryless_product(uint32_t a, uint32_t b)
 {
 	uint64_t product = 0;
@@ -335,6 +395,14 @@ static int context_worker(unsigned int id)
 				id, (unsigned int)count, iteration);
 			return 1;
 		}
+		count = 0;
+		s31_hwloop_complete_yield(&count);
+		if (count != 64) {
+			fprintf(stderr,
+				"worker %u: completed HWLoop count %u at iteration %u\n",
+				id, (unsigned int)count, iteration);
+			return 1;
+		}
 
 		for (lane = 0; lane < 4; lane++)
 			out[lane] = 0;
@@ -370,6 +438,8 @@ int main(void)
 	if (all_fpu_instruction_tests())
 		return 1;
 	if (all_hwloop_instruction_tests())
+		return 1;
+	if (completed_hwloop_switch_tests())
 		return 1;
 	if (bitmanip_tests())
 		return 1;

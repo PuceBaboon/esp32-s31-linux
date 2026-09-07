@@ -39,6 +39,15 @@ OVERLAYS="${OVERLAYS:-none}"
 
 echo "S31 peripheral test: ${MODEL:-unknown board}; overlays=${OVERLAYS}"
 
+GPTIMER_COUNT=0
+for dev in /sys/bus/counter/devices/counter*; do
+	[ -e "$dev/count0/prescaler" ] || continue
+	[ -e "$dev/count1/prescaler" ] || continue
+	GPTIMER_COUNT=$((GPTIMER_COUNT + 1))
+done
+[ "$GPTIMER_COUNT" -eq 2 ] && pass "two GPTimer groups registered" ||
+	fail "expected two GPTimer groups, got $GPTIMER_COUNT"
+
 WATCHDOGS="$(find /dev -maxdepth 1 -name 'watchdog[0-9]*' | sort)"
 if [ "$(echo "$WATCHDOGS" | sed '/^$/d' | wc -l)" -eq 3 ]; then
 	for dev in $WATCHDOGS; do
@@ -57,7 +66,14 @@ fi
 if has_overlay timers; then
 	for dev in /sys/bus/counter/devices/counter*; do
 		[ -e "$dev/count0/count" ] || continue
-		case "$(cat "$dev/name")" in
+		timer_name="$(cat "$dev/name")"
+		case "$timer_name" in
+		20580000.timer|20581000.timer)
+			# The two general-purpose timer groups are stopped until a
+			# consumer enables a channel.  Registration was checked above;
+			# only the always-running system/RTC counters belong here.
+			continue
+			;;
 		*timer*) ;;
 		*) continue ;;
 		esac
@@ -146,6 +162,14 @@ if has_overlay analog; then
 				fail "$name oneshot sample"
 			fi
 			;;
+		esp32s31-dac)
+			if [ -e "$dev/out_voltage0_raw" ] &&
+			   [ -e "$dev/out_voltage1_raw" ]; then
+				pass "$name two output channels registered"
+			else
+				fail "$name output channel registration"
+			fi
+			;;
 		esp32s31-touch)
 			# Use channel 8/GPIO14, which yields a repeatable conversion on
 			# the current board without requiring an external touch electrode.
@@ -177,8 +201,17 @@ if has_overlay analog; then
 	fi
 fi
 
-if has_overlay sdmmc0 || has_overlay sdmmc1; then
+if has_overlay sdmmc0 || has_overlay sdmmc1 || has_overlay sdmmc-dual; then
 	skip "SDMMC was requested as software-only; no card access performed"
+fi
+
+if has_overlay gpspi2-target; then
+	[ -c /dev/spidev2.0 ] && pass "GPSPI2 target /dev/spidev2.0 registered" ||
+		fail "GPSPI2 target spidev not registered"
+fi
+if has_overlay gpspi3-target; then
+	[ -c /dev/spidev3.0 ] && pass "GPSPI3 target /dev/spidev3.0 registered" ||
+		fail "GPSPI3 target spidev not registered"
 fi
 
 if has_overlay gmac; then

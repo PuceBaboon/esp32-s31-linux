@@ -56,6 +56,31 @@ s31_hwloop_yield:
 	ret
 	.size s31_hwloop_yield, .-s31_hwloop_yield
 
+	/*
+	 * Complete the loop before yielding.  The hardware may leave its state
+	 * DIRTY with a zero count here; restoring that stale state as live used to
+	 * redirect a later function into the middle of its prologue.
+	 */
+	.globl s31_hwloop_complete_yield
+	.type s31_hwloop_complete_yield, @function
+s31_hwloop_complete_yield:
+	addi	sp, sp, -16
+	sw	s0, 12(sp)
+	mv	s0, a0
+	li	t0, 64
+	/* esp.lp.setup 0,t0,.Lhw_complete_end (offset 12). */
+	.word	0x0062c02b
+	lw	t1, 0(s0)
+	addi	t1, t1, 1
+.Lhw_complete_end:
+	sw	t1, 0(s0)
+	li	a7, 124		/* __NR_sched_yield */
+	ecall
+	lw	s0, 12(sp)
+	addi	sp, sp, 16
+	ret
+	.size s31_hwloop_complete_yield, .-s31_hwloop_complete_yield
+
 	.globl s31_hwloop_signal
 	.type s31_hwloop_signal, @function
 s31_hwloop_signal:

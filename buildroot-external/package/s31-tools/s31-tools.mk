@@ -64,6 +64,9 @@ define S31_TOOLS_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/sbin/s31-modload
 	$(INSTALL) -D -m 0755 $(@D)/s31-hil-io \
 		$(TARGET_DIR)/usr/sbin/s31-hil-io
+	$(INSTALL) -D -m 0755 \
+		$(BR2_EXTERNAL_ESP32_S31_PATH)/../tools/cpu_sample.sh \
+		$(TARGET_DIR)/usr/sbin/s31-cpu-sample
 endef
 
 $(eval $(generic-package))
