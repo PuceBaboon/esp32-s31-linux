@@ -123,12 +123,12 @@ probe_smoke_overlay()
 		emit FAIL "standalone.$_smoke_name.apply" probe "$_smoke_apply"
 		return
 	fi
-	if _smoke_output="$(s31-peripheral-test "$_smoke_name" 2>&1)"; then
+	if bounded_run 30 s31-peripheral-test "$_smoke_name"; then
 		emit PASS "standalone.$_smoke_name.operation" data \
-			"$(printf '%s\n' "$_smoke_output" | tail -n 1)"
+			"$(printf '%s\n' "$BOUNDED_OUTPUT" | tail -n 1)"
 	else
 		emit FAIL "standalone.$_smoke_name.operation" data \
-			"$(printf '%s\n' "$_smoke_output" | tail -n 1)"
+			"$(printf '%s\n' "$BOUNDED_OUTPUT" | tail -n 1)"
 	fi
 	if s31-overlay remove "$_smoke_name" --volatile >/dev/null 2>&1; then
 		emit PASS "standalone.$_smoke_name.cleanup" probe "temporary overlay removed"
@@ -204,31 +204,28 @@ firmware_tests()
 
 	check_routes uart1 uart1.tx uart1.rx
 	check_routes i2c0 i2c0.scl i2c0.sda
-	check_routes gpspi2 gpspi2.sclk gpspi2.mosi gpspi2.miso gpspi2.cs0
-	check_routes i2s0 i2s0.bck-out i2s0.bck-in i2s0.ws-out i2s0.ws-in i2s0.data-out i2s0.data-in
+	# GPSPI chip select is a GPIO descriptor, not an interrupt-matrix route.
+	check_routes gpspi2 gpspi2.sclk gpspi2.mosi gpspi2.miso
+	# The HIL fixture supplies BCK/WS while Linux is the playback slave.
+	check_routes i2s0 i2s0.tx-bck-in i2s0.bck-in i2s0.tx-ws-in i2s0.ws-in i2s0.data-out i2s0.data-in
 	check_routes twai0 twai0.tx twai0.rx
 
 	# Apply one controller at a time on the fixed HIL lanes.  No data is
 	# transmitted and every overlay is removed before the next probe.
 	probe_overlay uart1 uart1.tx=42 uart1.rx=43
 	probe_overlay i2c0 i2c0.scl=42 i2c0.sda=43
-	probe_overlay gpspi2 gpspi2.sclk=42 gpspi2.mosi=43 gpspi2.miso=44 gpspi2.cs0=45
-	probe_overlay i2s0 i2s0.bck-out=42 i2s0.bck-in=42 i2s0.ws-out=43 i2s0.ws-in=43 i2s0.data-out=44 i2s0.data-in=45
+	probe_overlay gpspi2 gpspi2.sclk=42 gpspi2.mosi=43 gpspi2.miso=44
+	probe_overlay i2s0 i2s0.tx-bck-in=42 i2s0.bck-in=42 i2s0.tx-ws-in=43 i2s0.ws-in=43 i2s0.data-out=44 i2s0.data-in=45
 	probe_overlay twai0 twai0.tx=42 twai0.rx=43
 
 	# Exercise controllers which need no external fixture.  Each dynamic
 	# overlay is removed before proceeding so the shared test pins/resources
 	# are never left claimed.
 	probe_smoke_overlay timers
+	probe_smoke_overlay watchdogs
 	probe_smoke_overlay pwm-counter
 	probe_smoke_overlay analog
-	if _gdma_output="$(s31-peripheral-test gdma 2>&1)"; then
-		emit PASS standalone.gdma.memcpy data \
-			"$(printf '%s\n' "$_gdma_output" | tail -n 1)"
-	else
-		emit FAIL standalone.gdma.memcpy data \
-			"$(printf '%s\n' "$_gdma_output" | tail -n 1)"
-	fi
+	probe_smoke_overlay gdma
 	if _crypto_output="$(s31-crypto-test 2>&1)"; then
 		emit PASS standalone.crypto.api data \
 			"$(printf '%s\n' "$_crypto_output" | head -n 1)"
@@ -533,6 +530,12 @@ irq_line_count()
 
 smp_irq_dma_tests()
 {
+	radio_started=0
+	if ! find /sys -type f -name radio_health 2>/dev/null | grep -q .; then
+		if S31_RADIO_VOLATILE_MODE=wifi /etc/init.d/S00s31-radio start; then
+			radio_started=1
+		fi
+	fi
 	stress_log=/tmp/s31-hil-stress.$$
 	if bounded_run 90 s31-selftest --stress --duration 10 --json; then
 		printf '%s\n' "$BOUNDED_OUTPUT" >"$stress_log"
@@ -550,6 +553,10 @@ smp_irq_dma_tests()
 		emit FAIL smp.concurrent-load stress "${detail:-selftest timed out or emitted no summary}"
 	fi
 	rm -f "$stress_log"
+	if [ "$radio_started" -eq 1 ]; then
+		/etc/init.d/S00s31-radio stop >/dev/null 2>&1 || true
+		s31-overlay remove radio-wifi --volatile >/dev/null 2>&1 || true
+	fi
 
 	added=0
 	if ! active_overlay gdma; then
@@ -570,10 +577,13 @@ smp_irq_dma_tests()
 		echo 8 >/sys/module/dmatest/parameters/iterations
 		echo 3000 >/sys/module/dmatest/parameters/timeout
 		echo dma0chan4 >/sys/module/dmatest/parameters/channel
+		result_pattern='dmatest: dma0chan4-copy0: summary 8 tests'
+		before_results="$(dmesg | grep -c "$result_pattern")"
 		echo 1 >/sys/module/dmatest/parameters/run
 		sleep 8
 		echo 0 >/sys/module/dmatest/parameters/run
-		result="$(dmesg | tail -120 | grep 'dmatest:.*tests' | tail -n 1)"
+		result="$(dmesg | grep "$result_pattern" |
+			sed -n "$((before_results + 1))p")"
 		rx_line="$(awk '$5 == 40 && /20343000.dma-controller/' /proc/interrupts)"
 		tx_line="$(awk '$5 == 45 && /20343000.dma-controller/' /proc/interrupts)"
 		rx_after="$(printf '%s\n' "$rx_line" | irq_line_count)"

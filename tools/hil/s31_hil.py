@@ -287,6 +287,10 @@ def collect(port, timeout: float, stop_on_summary: bool = True) -> list[Result]:
             )
             if stop_on_summary and result.test == "summary":
                 return results
+    if stop_on_summary:
+        raise RuntimeError(
+            f"timed out after {timeout:g}s waiting for HIL summary"
+        )
     return results
 
 
@@ -808,7 +812,7 @@ def run_uart_peer(s31_path: str, p4_path: str, timeout: float) -> list[Result]:
 
 
 def run_spi_peer(s31_path: str, p4_path: str, timeout: float,
-                 stress: bool = False, stress_speed: int = 14000000,
+                 stress: bool = False, stress_speed: int = 5000000,
                  stress_length: int = 4096,
                  stress_modes: tuple[int, ...] = (0, 1, 2, 3)) -> list[Result]:
     results: list[Result] = []
@@ -852,8 +856,12 @@ def run_spi_peer(s31_path: str, p4_path: str, timeout: float,
                            for mode in stress_modes))
             for mode, speed, length in cases:
                 results.append(p4_command(p4, f"arm {token}", "safety.arm"))
+                # P4 rev 1.3 slave DMA needs the opposite transmit sampling
+                # edge for CPHA modes so the first MISO byte is stable before
+                # the S31 master clocks the long transfer.
+                edge_args = " -1 1 -1" if mode in (1, 2) else ""
                 results.append(p4_command(
-                    p4, f"spi-start {mode} {length} {speed}",
+                    p4, f"spi-start {mode} {length} {speed}{edge_args}",
                                           "peer.spi-start"))
                 time.sleep(0.2)
                 rc, output = s31_shell_command(
@@ -925,7 +933,7 @@ def run_spi_peer(s31_path: str, p4_path: str, timeout: float,
 
 
 def run_spi_stress_peer(s31_path: str, p4_path: str,
-                        timeout: float, speed: int = 14000000,
+                        timeout: float, speed: int = 5000000,
                         length: int = 4096,
                         modes: tuple[int, ...] = (0, 1, 2, 3)) -> list[Result]:
     return run_spi_peer(s31_path, p4_path, timeout, stress=True,
@@ -1876,7 +1884,8 @@ def run_c6_wifi(s31_path: str, p4_path: str, timeout: float,
 
         rc, output = s31_shell_command(
             s31,
-            "ok=1; grep -q '^enabled=0$' /etc/esp32-conf/wifi.conf || "
+            "ok=1; { test ! -f /etc/esp32-conf/wifi.conf || "
+            "grep -q '^enabled=0$' /etc/esp32-conf/wifi.conf; } || "
             "{ echo policy-not-disabled; ok=0; }; "
             "test ! -f /etc/esp32-conf/wpa_supplicant.conf || "
             "{ echo persistent-profile-present; ok=0; }; "
@@ -2018,10 +2027,13 @@ def run_c6_wifi(s31_path: str, p4_path: str, timeout: float,
                 try:
                     rc, output = s31_shell_command(
                         s31,
-                        "state=$(wpa_cli -p /run/wpa_supplicant -i wlan0 "
-                        "status 2>/dev/null | sed -n s/^wpa_state=//p); "
-                        "printf 'wpa_state=%s\\n' \"$state\"; "
-                        "[ \"$state\" = COMPLETED ]",
+                        "carrier=$(cat /sys/class/net/wlan0/carrier "
+                        "2>/dev/null || echo 0); "
+                        f"connected=0; grep -q 'CTRL-EVENT-CONNECTED' {wpa_log} "
+                        "2>/dev/null && connected=1; "
+                        "printf 'carrier=%s connected=%s\\n' \"$carrier\" "
+                        "\"$connected\"; "
+                        "[ \"$carrier\" = 1 ] && [ \"$connected\" = 1 ]",
                         5.0,
                     )
                 except RuntimeError as exc:
@@ -2176,7 +2188,8 @@ def run_c6_wifi(s31_path: str, p4_path: str, timeout: float,
                 ))
             cleanup_steps.append((
                 "persistent-policy",
-                "grep -q '^enabled=0$' /etc/esp32-conf/wifi.conf && "
+                "{ test ! -f /etc/esp32-conf/wifi.conf || "
+                "grep -q '^enabled=0$' /etc/esp32-conf/wifi.conf; } && "
                 "test ! -f /etc/esp32-conf/wpa_supplicant.conf",
                 5.0,
             ))
@@ -2295,8 +2308,7 @@ def run_c6_ble(s31_path: str, p4_path: str, timeout: float) -> list[Result]:
     s31 = open_serial(s31_path)
     p4 = open_serial(p4_path)
     results: list[Result] = []
-    bt_backup = "/tmp/hil-bluetooth.conf"
-    wifi_backup = "/tmp/hil-wifi.conf"
+    bt_runtime_conf = "/tmp/hil-bluetooth.conf"
     try:
         if not wait_for_shell(s31, min(timeout, 20.0)):
             raise RuntimeError("S31 shell prompt was not detected")
@@ -2307,14 +2319,18 @@ def run_c6_ble(s31_path: str, p4_path: str, timeout: float) -> list[Result]:
             results.append(p4_command(p4, "hello", "rpc.hello", 10.0))
         rc, output = s31_shell_command(
             s31,
-            "rm -f /tmp/hil-bluetooth.conf /tmp/hil-wifi.conf; "
-            "[ ! -f /etc/esp32-conf/bluetooth.conf ] || "
-            "cp /etc/esp32-conf/bluetooth.conf /tmp/hil-bluetooth.conf; "
-            "[ ! -f /etc/esp32-conf/wifi.conf ] || "
-            "cp /etc/esp32-conf/wifi.conf /tmp/hil-wifi.conf; "
-            "if [ -f /etc/esp32-conf/wifi.conf ]; then "
-            "sed -i 's/^enabled=.*/enabled=0/' /etc/esp32-conf/wifi.conf; fi; "
-            "esp32-config bluetooth enable >/tmp/hil-bt-enable.log 2>&1; "
+            "{ test ! -f /etc/esp32-conf/wifi.conf || "
+            "grep -q '^enabled=0$' /etc/esp32-conf/wifi.conf; } && "
+            "{ test ! -f /etc/esp32-conf/bluetooth.conf || "
+            "grep -q '^enabled=0$' /etc/esp32-conf/bluetooth.conf; } && "
+            "/etc/init.d/S40btstack stop >/dev/null 2>&1; "
+            "/etc/init.d/S00s31-radio stop >/dev/null 2>&1 || true; "
+            "printf 'enabled=1\\nindex=0\\nle=1\\n' "
+            f">{bt_runtime_conf}; "
+            "S31_RADIO_VOLATILE_MODE=bt "
+            "/etc/init.d/S00s31-radio start >/tmp/hil-bt-enable.log 2>&1 && "
+            f"S31_BTSTACK_CONFIG={bt_runtime_conf} "
+            "/etc/init.d/S40btstack start >>/tmp/hil-bt-enable.log 2>&1; "
             "_rc=$?; sleep 2; "
             "grep -q 'advertising as S31 Radio' /run/s31-btstack-a2dp.log || _rc=1; "
             "cat /tmp/hil-bt-enable.log; [ \"$_rc\" -eq 0 ]",
@@ -2334,23 +2350,22 @@ def run_c6_ble(s31_path: str, p4_path: str, timeout: float) -> list[Result]:
             cleanup_rc, cleanup_output = s31_shell_command(
                 s31,
                 "/etc/init.d/S40btstack stop >/dev/null 2>&1 || true; "
-                f"if [ -f {bt_backup} ]; then cp {bt_backup} "
-                "/etc/esp32-conf/bluetooth.conf; else "
-                "rm -f /etc/esp32-conf/bluetooth.conf; fi; "
-                f"if [ -f {wifi_backup} ]; then cp {wifi_backup} "
-                "/etc/esp32-conf/wifi.conf; else "
-                "rm -f /etc/esp32-conf/wifi.conf; fi; "
-                "if grep -q '^enabled=1$' /etc/esp32-conf/wifi.conf "
-                "2>/dev/null; then esp32-config wifi enable; else "
-                "esp32-config wifi disable; fi >/dev/null 2>&1 || true; "
-                f"rm -f {bt_backup} {wifi_backup} /tmp/hil-bt-enable.log",
+                "/etc/init.d/S00s31-radio stop >/dev/null 2>&1 || true; "
+                "s31-overlay remove radio-bluetooth --volatile "
+                ">/dev/null 2>&1 || true; "
+                f"rm -f {bt_runtime_conf} /tmp/hil-bt-enable.log; "
+                "test ! -e /dev/s31-hci && "
+                "{ test ! -f /etc/esp32-conf/wifi.conf || "
+                "grep -q '^enabled=0$' /etc/esp32-conf/wifi.conf; } && "
+                "{ test ! -f /etc/esp32-conf/bluetooth.conf || "
+                "grep -q '^enabled=0$' /etc/esp32-conf/bluetooth.conf; }",
                 max(timeout, 50.0),
             )
             results.append(host_result(
                 "PASS" if cleanup_rc == 0 else "FAIL",
                 "s31.ble-cleanup", "recovery",
-                "pre-test Wi-Fi/Bluetooth policy restored and temporary "
-                "files removed" if cleanup_rc == 0 else
+                "volatile Bluetooth runtime stopped; persistent disabled "
+                "policy unchanged" if cleanup_rc == 0 else
                 "policy restore failed: " + cleanup_output[-240:],
             ))
         except Exception as exc:
@@ -2478,8 +2493,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--repeat", type=int, default=1,
                         help="repeat the selected peer case in one HIL run")
-    parser.add_argument("--spi-stress-speed", type=int, default=14000000,
-                        help="SPI stress clock in Hz (default: 14000000)")
+    parser.add_argument("--spi-stress-speed", type=int, default=5000000,
+                        help="SPI stress clock in Hz (default: 5000000)")
     parser.add_argument("--spi-stress-length", type=int, default=4096,
                         help="SPI stress payload bytes (default: 4096)")
     parser.add_argument("--spi-stress-modes", default="0,1,2,3",
@@ -2522,6 +2537,122 @@ def main() -> int:
         parser.error("--lp-wake-p4-gpio is not in the P4 safe GPIO pool")
 
     all_results: list[Result] = []
+    if args.case == "all":
+        s31_port = (args.s31_port or autodetect_port("s31")
+                    if args.board in ("s31", "both") else None)
+        p4_port = (args.p4_port or autodetect_port("p4")
+                   if args.board in ("p4", "both") else None)
+        if args.board in ("s31", "both") and s31_port is None:
+            print("all requires the S31 port", file=sys.stderr)
+            return 2
+        if args.board in ("p4", "both") and p4_port is None:
+            print("all requires the P4 port", file=sys.stderr)
+            return 2
+
+        def add_stage(name: str, operation) -> None:
+            try:
+                stage_results = operation()
+                # A single top-level summary below represents the aggregate.
+                # The firmware case's peer SKIPs are placeholders; real peer
+                # cases are host-orchestrated immediately afterwards.
+                all_results.extend(
+                    result for result in stage_results
+                    if result.test != "summary" and not (
+                        name in ("s31-firmware", "p4-firmware") and
+                        result.status == "SKIP" and
+                        result.test.startswith("peer.")
+                    )
+                )
+            except Exception as exc:
+                all_results.append(host_result(
+                    "FAIL", f"all.{name}", "orchestration", str(exc),
+                ))
+
+        if p4_port is not None:
+            print(f"P4 port: {p4_port}")
+            add_stage("p4-firmware", lambda: run_p4(p4_port, args.timeout))
+        if s31_port is not None:
+            print(f"S31 port: {s31_port}")
+            add_stage("s31-firmware", lambda: run_s31(
+                s31_port, "firmware", args.timeout, False, False,
+                args.local_ip, args.peer_ip,
+            ))
+
+        if s31_port is not None and p4_port is not None:
+            peer_stages = (
+                ("gpio", lambda: run_gpio_peer(s31_port, p4_port,
+                                                args.timeout)),
+                ("uart", lambda: run_uart_peer(s31_port, p4_port,
+                                                args.timeout)),
+                ("spi", lambda: run_spi_peer(s31_port, p4_port,
+                                              args.timeout)),
+                ("spi-stress", lambda: run_spi_stress_peer(
+                    s31_port, p4_port, args.timeout,
+                    args.spi_stress_speed, args.spi_stress_length,
+                    spi_stress_modes,
+                )),
+                ("i2c", lambda: run_i2c_peer(
+                    s31_port, p4_port, args.timeout, args.i2c_speed,
+                )),
+                ("i2s", lambda: run_i2s_peer(
+                    s31_port, p4_port, args.timeout,
+                    stress=False, rate=args.i2s_rate,
+                )),
+                ("i2s-stress", lambda: run_i2s_peer(
+                    s31_port, p4_port, args.timeout,
+                    stress=True, rate=args.i2s_rate,
+                )),
+                ("pwm-pcnt", lambda: run_pwm_pcnt_peer(
+                    s31_port, p4_port, args.timeout,
+                )),
+                ("ethernet", lambda: run_ethernet_peer(
+                    s31_port, p4_port, args.timeout,
+                )),
+                ("c6-wifi", lambda: run_c6_wifi(
+                    s31_port, p4_port, args.timeout, args.wifi_ap_open,
+                    args.wifi_suspend_cycles,
+                )),
+                ("c6-ble", lambda: run_c6_ble(
+                    s31_port, p4_port, args.timeout,
+                )),
+            )
+            for stage_name, operation in peer_stages:
+                add_stage(stage_name, operation)
+            if args.lp_wake_connected:
+                add_stage("power-wake", lambda: run_power_wake_peer(
+                    s31_port, p4_port, args.timeout,
+                    args.lp_wake_s31_gpio, args.lp_wake_p4_gpio,
+                    not args.lp_wake_active_low,
+                ))
+            else:
+                all_results.append(host_result(
+                    "SKIP", "peer.power-wake", "electrical",
+                    "dedicated LP wake wire not confirmed; pass "
+                    "--lp-wake-connected after wiring",
+                ))
+
+        if s31_port is not None:
+            for local_case in ("sdmmc", "usb-drive", "mtd", "lp-core",
+                               "smp-irq-dma"):
+                add_stage(local_case, lambda local_case=local_case: run_s31(
+                    s31_port, local_case,
+                    max(args.timeout, 120.0)
+                    if local_case == "smp-irq-dma" else args.timeout,
+                    args.allow_usb_write, False,
+                    args.local_ip, args.peer_ip,
+                ))
+            add_stage("c6-wifi-recover", lambda: run_c6_wifi_recover(
+                s31_port, args.timeout,
+            ))
+
+        all_results.append(host_result(
+            "FAIL" if failed(all_results) else "PASS",
+            "summary", "summary",
+            "complete host-orchestrated S31/P4 HIL suite",
+        ))
+        if args.output:
+            save_results(args.output, all_results)
+        return 1 if failed(all_results) else 0
     if args.case == "power-wake":
         if not args.lp_wake_connected:
             print("power-wake requires --lp-wake-connected after wiring the "

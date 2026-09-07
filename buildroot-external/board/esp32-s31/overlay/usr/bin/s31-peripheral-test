@@ -39,31 +39,19 @@ OVERLAYS="${OVERLAYS:-none}"
 
 echo "S31 peripheral test: ${MODEL:-unknown board}; overlays=${OVERLAYS}"
 
-GPTIMER_COUNT=0
-for dev in /sys/bus/counter/devices/counter*; do
-	[ -e "$dev/count0/prescaler" ] || continue
-	[ -e "$dev/count1/prescaler" ] || continue
-	GPTIMER_COUNT=$((GPTIMER_COUNT + 1))
-done
-[ "$GPTIMER_COUNT" -eq 2 ] && pass "two GPTimer groups registered" ||
-	fail "expected two GPTimer groups, got $GPTIMER_COUNT"
-
-WATCHDOGS="$(find /dev -maxdepth 1 -name 'watchdog[0-9]*' | sort)"
-if [ "$(echo "$WATCHDOGS" | sed '/^$/d' | wc -l)" -eq 3 ]; then
-	for dev in $WATCHDOGS; do
-		(
-			exec 3>"$dev"
-			printf '\0' >&3
-			printf 'V' >&3
-			exec 3>&-
-		) || fail "$dev ping/magic-close"
-	done
-	pass "TIMG0/TIMG1/RTC watchdog nodes and ping/magic-close"
-else
-	fail "expected three watchdog devices"
-fi
-
 if has_overlay timers; then
+	GPTIMER_COUNT=0
+	for dev in /sys/bus/counter/devices/counter*; do
+		[ -e "$dev/count0/prescaler" ] || continue
+		case "$(cat "$dev/name" 2>/dev/null)" in
+		20580000.timer|20581000.timer) ;;
+		*) continue ;;
+		esac
+		GPTIMER_COUNT=$((GPTIMER_COUNT + 1))
+	done
+	[ "$GPTIMER_COUNT" -eq 2 ] && pass "two GPTimer groups registered" ||
+		fail "expected two GPTimer groups, got $GPTIMER_COUNT"
+
 	for dev in /sys/bus/counter/devices/counter*; do
 		[ -e "$dev/count0/count" ] || continue
 		timer_name="$(cat "$dev/name")"
@@ -86,6 +74,22 @@ if has_overlay timers; then
 			fail "$(cat "$dev/name") did not increment ($before -> $after)"
 		fi
 	done
+fi
+
+if has_overlay watchdogs; then
+	WATCHDOGS="$(find /dev -maxdepth 1 -name 'watchdog[0-9]*' | sort)"
+	if [ "$(echo "$WATCHDOGS" | sed '/^$/d' | wc -l)" -eq 3 ]; then
+		# Opening a watchdog arms it.  A smoke probe must not depend on every
+		# hardware watchdog supporting magic-close: a failed close would reset
+		# the board and strand the HIL session.  Destructive reset/recovery is a
+		# separate host-orchestrated test; here verify driver registration only.
+		for dev in $WATCHDOGS; do
+			[ -c "$dev" ] || fail "$dev is not a character device"
+		done
+		pass "TIMG0/TIMG1/RTC watchdog nodes registered"
+	else
+		fail "expected three watchdog devices"
+	fi
 fi
 
 if has_overlay pwm-counter; then
@@ -133,11 +137,14 @@ if has_overlay gdma; then
 			esac
 		done
 		if [ -n "$channel" ]; then
+			result_pattern="dmatest: $channel-copy0: summary 1 tests"
+			before_results="$(dmesg | grep -c "$result_pattern")"
 			echo "$channel" >/sys/module/dmatest/parameters/channel
 			echo 1 >/sys/module/dmatest/parameters/run
 			sleep 4
 			echo 0 >/sys/module/dmatest/parameters/run
-			result="$(dmesg | tail -80 | grep 'dmatest:.*tests' | tail -1)"
+			result="$(dmesg | grep "$result_pattern" |
+				sed -n "$((before_results + 1))p")"
 			echo "$result"
 			echo "$result" | grep -q '0 failures' &&
 				pass "AHB-GDMA memcpy dmatest" ||
@@ -171,9 +178,9 @@ if has_overlay analog; then
 			fi
 			;;
 		esp32s31-touch)
-			# Use channel 8/GPIO14, which yields a repeatable conversion on
-			# the current board without requiring an external touch electrode.
-			raw="$dev/in_capacitance8_raw"
+			# Channel 1/GPIO7 is floating on the HIL board and gives stable
+			# conversions without requiring an external touch electrode.
+			raw="$dev/in_capacitance1_raw"
 			if value="$(cat "$raw" 2>/dev/null)"; then
 				pass "$name sample=$value"
 			else

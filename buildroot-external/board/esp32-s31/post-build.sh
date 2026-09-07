@@ -148,7 +148,6 @@ rm -f \
 	"${target_dir}/usr/sbin/segfault" \
 	"${target_dir}/usr/sbin/forktest" \
 	"${target_dir}/usr/sbin/membench" \
-	"${target_dir}/usr/sbin/s31-crypto-test" \
 	"${target_dir}/usr/sbin/s31-libc-test" \
 	"${target_dir}/usr/sbin/s31-mem-compare" \
 	"${target_dir}/usr/sbin/s31-string-bench" \

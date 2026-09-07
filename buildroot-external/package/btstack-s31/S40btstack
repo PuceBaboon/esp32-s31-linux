@@ -2,7 +2,7 @@
 
 pidfile=/run/s31-btstack-a2dp.pid
 logfile=/run/s31-btstack-a2dp.log
-bt_conf=/etc/esp32-conf/bluetooth.conf
+bt_conf="${S31_BTSTACK_CONFIG:-/etc/esp32-conf/bluetooth.conf}"
 executable=/usr/sbin/s31-btstack-a2dp
 
 recovery_mode()
