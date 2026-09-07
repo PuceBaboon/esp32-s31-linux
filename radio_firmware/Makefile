@@ -24,7 +24,10 @@ IDF_CAPTURED_INCLUDES := $(shell sed -e 's|@IDF_PATH@|$(IDF_PATH)|g' -e 's|@RADI
 IDF_BOOT_LINKPATH := $(shell sed -e 's|@IDF_PATH@|$(IDF_PATH)|g' -e 's|@RADIO_BUILD@|$(RADIO_BUILD_ABS)|g' boot_linkpath.txt)
 IDF_NET80211 := $(IDF_PATH)/components/esp_wifi/lib/esp32s31/libnet80211.a
 LINUX_NET80211 := libnet80211.s31-linux.a
-LINUX_NOFREERTOS_LINK := $(subst $(IDF_NET80211),$(LINUX_NET80211),$(shell sed 's|^esp-idf/|$(RADIO_BUILD)/esp-idf/|' nofreertos_link.txt))
+# nofreertos_link.txt is generated as a prerequisite of linux_radio.raw.o.
+# Keep this recursive so the file is read when that recipe runs, rather than
+# while make parses the file before it has generated the closure.
+LINUX_NOFREERTOS_LINK = $(subst $(IDF_NET80211),$(LINUX_NET80211),$(shell sed 's|^esp-idf/|$(RADIO_BUILD)/esp-idf/|' nofreertos_link.txt))
 
 HEAP_WRAP_APIS := heap_caps_malloc heap_caps_free heap_caps_calloc \
 	heap_caps_realloc heap_caps_aligned_alloc heap_caps_aligned_calloc \
