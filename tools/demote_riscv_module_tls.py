@@ -81,12 +81,20 @@ def main(path):
         for rel_off in range(rela[4], rela[4] + rela[5], 12):
             r_offset, r_info = struct.unpack_from("<II", data, rel_off)
             reloc_type = r_info & 0xFF
-            if reloc_type not in RELOC_MAP:
-                continue
             symbol_index = r_info >> 8
             symbol_off = symtab[4] + symbol_index * symtab[9]
             symbol_name_off = struct.unpack_from("<I", data, symbol_off)[0]
             symbol_name = cstring(strings, symbol_name_off)
+
+            # Newer ESP toolchains materialize errno as an STT_OBJECT with
+            # ordinary HI20/LO12 relocations.  It can still reside in a TLS
+            # section, but those relocations are already valid for a Linux
+            # module; only that section needs demoting.  Older toolchains emit
+            # TPREL relocations, which still need rewriting below.
+            if reloc_type not in RELOC_MAP:
+                if symbol_name == "errno":
+                    errno_symbols.add((symtab_index, symbol_index))
+                continue
             if symbol_name != "errno":
                 fail(f"unsupported TLS symbol {symbol_name!r} in {names[rela_index]}")
 
@@ -106,18 +114,24 @@ def main(path):
             patched_relocs += 1
             errno_symbols.add((symtab_index, symbol_index))
 
-    if not patched_relocs or not errno_symbols:
+    if not errno_symbols:
         fail(f"{path}: expected serialized errno TLS relocations")
 
     for symtab_index, symbol_index in errno_symbols:
         symtab = sections[symtab_index]
         symbol_off = symtab[4] + symbol_index * symtab[9]
         info = data[symbol_off + 12]
-        if (info & 0x0F) != STT_TLS:
-            fail(f"{path}: errno is not an STT_TLS symbol")
-        data[symbol_off + 12] = (info & 0xF0) | STT_OBJECT
         section_index = struct.unpack_from("<H", data, symbol_off + 14)[0]
-        if section_index < shnum and sections[section_index][2] & SHF_TLS:
+        if section_index >= shnum:
+            fail(f"{path}: errno has an invalid section index")
+        symbol_type = info & 0x0F
+        if symbol_type not in (STT_TLS, STT_OBJECT):
+            fail(f"{path}: errno has unsupported symbol type {symbol_type}")
+        is_tls = bool(sections[section_index][2] & SHF_TLS)
+        if symbol_type == STT_TLS and not is_tls:
+            fail(f"{path}: STT_TLS errno is not in an SHF_TLS section")
+        data[symbol_off + 12] = (info & 0xF0) | STT_OBJECT
+        if is_tls:
             sections[section_index][2] &= ~SHF_TLS
             struct.pack_into("<I", data,
                              shoff + section_index * shentsize + 8,
