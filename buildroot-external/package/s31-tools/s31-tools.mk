@@ -40,6 +40,8 @@ define S31_TOOLS_BUILD_CMDS
 		$(@D)/s31_overlay.c -lfdt -o $(@D)/s31-overlay
 	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
 		$(@D)/s31_modload.c -o $(@D)/s31-modload
+	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
+		$(@D)/s31_hil_io.c -o $(@D)/s31-hil-io
 endef
 
 define S31_TOOLS_INSTALL_TARGET_CMDS
@@ -60,6 +62,8 @@ define S31_TOOLS_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/sbin/s31-overlay
 	$(INSTALL) -D -m 0755 $(@D)/s31-modload \
 		$(TARGET_DIR)/usr/sbin/s31-modload
+	$(INSTALL) -D -m 0755 $(@D)/s31-hil-io \
+		$(TARGET_DIR)/usr/sbin/s31-hil-io
 endef
 
 $(eval $(generic-package))
