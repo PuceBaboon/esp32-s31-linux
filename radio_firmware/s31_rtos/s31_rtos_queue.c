@@ -161,6 +161,21 @@ void *xQueueCreateMutex(uint8_t type)
 	return q;
 }
 
+void *xQueueCreateMutexStatic(uint8_t type, void *static_queue)
+{
+	struct s31_queue *q = static_queue;
+
+	/* IDF owns the supplied StaticQueue_t storage.  The Linux bridge keeps
+	 * wait state out of that ABI object, so initialise only the compact queue
+	 * representation used by the payload and never free it in vQueueDelete(). */
+	if (!q)
+		return NULL;
+	s31_queue_init(q, S31_Q_TYPE_MUTEX, 1, 0, NULL);
+	q->is_static = 1;
+	(void)type;
+	return q->wait_context ? q : NULL;
+}
+
 void *xQueueCreateCountingSemaphore(uint32_t max, uint32_t initial)
 {
 	struct s31_queue *q;

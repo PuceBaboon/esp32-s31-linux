@@ -24,6 +24,7 @@ source "$CFG"
 : "${SLOT_SPL:?SLOT_SPL not set in $CFG}"
 : "${SLOT_UBOOT_ITB:?SLOT_UBOOT_ITB not set in $CFG}"
 : "${SLOT_DTB:?SLOT_DTB not set in $CFG}"
+: "${SLOT_RADIO:?SLOT_RADIO not set in $CFG}"
 : "${SLOT_KERNEL:?SLOT_KERNEL not set in $CFG}"
 : "${SLOT_PERSIST:?SLOT_PERSIST not set in $CFG}"
 : "${SLOT_ROOTFS:?SLOT_ROOTFS not set in $CFG}"
@@ -32,6 +33,7 @@ source "$CFG"
 : "${SPL_APP_BIN:=spl_app.bin}"
 : "${UBOOT_ITB:=u-boot.itb}"
 : "${BASE_DTB:=esp32s31_generic.dtb}"
+: "${RADIO_IMAGE:=radio.sqfs}"
 : "${KERNEL_IMAGE:=xipImage}"
 : "${ROOTFS_IMAGE:=rootfs.sqfs}"
 : "${OUT_IMAGE:=s31_full_flash.bin}"
@@ -52,7 +54,7 @@ command -v "$ESPTOOL" >/dev/null 2>&1 || {
 
 cd "$IMAGES_DIR"
 for image in "$SPL_APP_BIN" "$UBOOT_ITB" "$BASE_DTB" \
-	     "$KERNEL_IMAGE" "$ROOTFS_IMAGE"; do
+	     "$RADIO_IMAGE" "$KERNEL_IMAGE" "$ROOTFS_IMAGE"; do
 	[ -f "$image" ] || { echo "ERROR: required input missing: $IMAGES_DIR/$image" >&2; exit 1; }
 done
 
@@ -69,7 +71,8 @@ check_slot()
 
 check_slot "$SPL_APP_BIN" "$((SLOT_SPL))" "$((SLOT_UBOOT_ITB))"
 check_slot "$UBOOT_ITB" "$((SLOT_UBOOT_ITB))" "$((SLOT_DTB))"
-check_slot "$BASE_DTB" "$((SLOT_DTB))" "$((SLOT_KERNEL))"
+check_slot "$BASE_DTB" "$((SLOT_DTB))" "$((SLOT_RADIO))"
+check_slot "$RADIO_IMAGE" "$((SLOT_RADIO))" "$((SLOT_KERNEL))"
 check_slot "$KERNEL_IMAGE" "$((SLOT_KERNEL))" "$((SLOT_PERSIST))"
 check_slot "$ROOTFS_IMAGE" "$((SLOT_ROOTFS))" "$((FLASH_SIZE))"
 
@@ -80,6 +83,7 @@ check_slot "$ROOTFS_IMAGE" "$((SLOT_ROOTFS))" "$((FLASH_SIZE))"
 	"$SLOT_SPL" "$SPL_APP_BIN" \
 	"$SLOT_UBOOT_ITB" "$UBOOT_ITB" \
 	"$SLOT_DTB" "$BASE_DTB" \
+	"$SLOT_RADIO" "$RADIO_IMAGE" \
 	"$SLOT_KERNEL" "$KERNEL_IMAGE" \
 	"$SLOT_ROOTFS" "$ROOTFS_IMAGE"
 

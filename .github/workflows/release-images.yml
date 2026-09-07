@@ -28,7 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             bison bc build-essential ccache cpio device-tree-compiler flex gperf libffi-dev \
-            libssl-dev ninja-build python3-pkg-resources python3-pyelftools rsync unzip
+            libssl-dev ninja-build python3-pkg-resources python3-pyelftools rsync unzip xz-utils
 
       - name: Install ESP-IDF
         run: |
@@ -78,6 +78,7 @@ jobs:
             build/spl_app.bin \
             build/u-boot.itb \
             build/esp32s31_generic.dtb \
+            build/radio.sqfs \
             build/xipImage \
             build/rootfs.sqfs \
             build/s31_full_flash.bin \
@@ -90,15 +91,75 @@ jobs:
           test -s build/spl_app.bin
           test -s build/u-boot.itb
           test -s build/esp32s31_generic.dtb
+          test -s build/radio.sqfs
           test -s build/xipImage
           test -s build/rootfs.sqfs
           test -s build/s31_full_flash.bin
           test -s build/coremark/coremark.exe
+          test ! -e bootloader
+          test "$(cat build/btstack-source/.s31-btstack-version)" = \
+            431d58d5613fd8fae38afe50282b25302de84bf7
+          test -x build/buildroot/target/usr/sbin/s31-btstack-a2dp
+          ! grep -q '^BR2_PACKAGE_BLUEZ5_UTILS=y$' build/buildroot/.config
+          ! grep -q '^BR2_PACKAGE_DBUS=y$' build/buildroot/.config
+          ! grep -q '^BR2_PACKAGE_LIBGLIB2=y$' build/buildroot/.config
+          "$GITHUB_WORKSPACE/toolchain/riscv32-esp-linux-musl/bin/riscv32-esp-linux-musl-readelf" \
+            -d build/buildroot/target/usr/sbin/s31-btstack-a2dp > build/btstack-dynamic.txt
+          test "$(grep -c '(NEEDED)' build/btstack-dynamic.txt)" -eq 1
+          grep -q 'Shared library: \[libc.so\]' build/btstack-dynamic.txt
+          for retired in \
+            usr/libexec/bluetooth/bluetoothd \
+            usr/libexec/dbus-daemon-launch-helper \
+            usr/bin/dbus-daemon usr/bin/bluealsa usr/bin/bluealsa-aplay \
+            usr/sbin/s31-bt-agent \
+            etc/bluetooth etc/dbus-1 \
+            usr/share/dbus-1 usr/share/xml/dbus-1 usr/share/glib-2.0 \
+            var/lib/bluetooth var/lib/dbus; do
+            test ! -e "build/buildroot/target/$retired"
+          done
+          test -z "$(find build/buildroot/target/lib build/buildroot/target/usr/lib \
+            -maxdepth 2 \( -name 'libbluetooth.so*' -o -name 'libdbus-1.so*' \
+            -o -name 'libgio-2.0.so*' -o -name 'libglib-2.0.so*' \
+            -o -name 'libgmodule-2.0.so*' -o -name 'libgobject-2.0.so*' \
+            -o -name 'libgthread-2.0.so*' \) -print)"
+          test -f radio_firmware/idf_deps/build-radio/build.ninja
+          test -s build/linux-6.18/drivers/platform/esp32s31-radio.ko
+          test -s build/esp32s31-radio-fw-v1.o
+          grep -q '^CONFIG_ESP32S31_RADIO_SMODE_DRIVER=m$' build/linux-6.18/.config
+          grep -q '^CONFIG_ESP32S31_RADIO_BLOBS=y$' build/linux-6.18/.config
+          grep -q '^CONFIG_ESP32S31_WIFI=y$' build/linux-6.18/.config
+          grep -q '^CONFIG_BT_ESP32S31=y$' build/linux-6.18/.config
+          grep -q '^CONFIG_FW_LOADER_COMPRESS_XZ=y$' build/linux-6.18/.config
+          test ! -e build/linux-6.18/drivers/net/wireless/espressif/esp32s31-wifi.ko
+          test ! -e build/linux-6.18/drivers/bluetooth/esp32s31-btdm.ko
+          ! "$GITHUB_WORKSPACE/toolchain/riscv32-esp-linux-musl/bin/riscv32-esp-linux-musl-nm" \
+            build/linux-6.18/drivers/platform/esp32s31-radio.ko | \
+            grep -qE ' (esp_wifi_|esp_bt_|s31_radio_fw_abi_version)'
           grep -q '^CONFIG_ESP32S31_COPROC_CONTEXT=y$' build/linux-6.18/.config
           "$GITHUB_WORKSPACE/toolchain/riscv32-esp-linux-musl/bin/riscv32-esp-linux-musl-objdump" \
             -d build/buildroot/target/usr/lib/libc.so > build/release-libc-disassembly.txt
           ! grep -q 'esp\.' build/release-libc-disassembly.txt
           echo "All core artifacts verified OK"
+
+      - name: Gate and package radio redistribution
+        run: |
+          grant=release-legal/radio/REDISTRIBUTION_GRANT
+          source_archive=release-legal/radio/CORRESPONDING_SOURCE.tar.xz
+          if [ ! -s "$grant" ] || [ ! -s "$source_archive" ]; then
+            echo "::error::Radio releases require $grant and $source_archive"
+            echo "::error::A single .ko is a technical boundary, not a license grant"
+            exit 1
+          fi
+          tools/build_radio_bundle.sh --release \
+            --grant "$grant" --source-archive "$source_archive"
+          test -s build/radio-package/esp32s31-radio-release.tar.xz
+
+      - name: Package BTstack notices
+        run: |
+          make btstack-notices
+          test -s build/btstack-s31-notices.tar.xz
+          tar -tJf build/btstack-s31-notices.tar.xz | \
+            grep -q '^btstack-s31-notices/BTSTACK_LICENSE$'
 
       - name: Prepare release metadata
         id: release
@@ -123,8 +184,11 @@ jobs:
             build/spl_app.bin \
             build/u-boot.itb \
             build/esp32s31_generic.dtb \
+            build/radio.sqfs \
             build/xipImage \
             build/rootfs.sqfs \
+            build/radio-package/esp32s31-radio-release.tar.xz \
+            build/btstack-s31-notices.tar.xz \
             build/coremark/coremark.exe \
             --title "$RELEASE_TITLE" \
-            --notes "$FLASH_COMMAND"
+            --notes "$FLASH_COMMAND"$'\n\n''Bluetooth uses BTstack under its personal/non-commercial license. Commercial use requires a separate BlueKitchen license; see btstack-s31-notices.tar.xz.'

@@ -37,6 +37,7 @@ struct s31_tcb {
 	void (*entry)(void *arg);
 	void *arg;
 	uint32_t priority;
+	int32_t core_id;          /* IDF affinity: 0, 1, or tskNO_AFFINITY */
 	void *linux_task;       /* opaque Linux task object */
 	void *stack_base;       /* internal-SRAM payload stack */
 	uint32_t stack_size;
@@ -116,13 +117,17 @@ extern uint32_t s31_rtos_isr_depth;   /* world glue sets around radio ISRs */
  * the Linux kernel driver without including kernel headers in the payload. */
 void *s31_linux_task_create(void (*entry)(void *), const char *name,
 				uint32_t stack_size, void *stack_base,
-				void *arg, uint32_t priority, void *cookie);
+				void *arg, uint32_t priority, void *cookie,
+				int32_t core_id);
 void s31_linux_task_exit_current(void);
 int32_t s31_linux_task_stop(void *task);
 void *s31_linux_current_cookie(void);
 void s31_linux_task_delay(TickType_t ticks);
 uint32_t s31_linux_tick_count(void);
 uint64_t s31_linux_time_ns(void);
+int32_t s31_linux_current_cpu(void);
+uint32_t s31_linux_timer_next_due_us(void);
+void s31_linux_timer_report(void);
 void s31_linux_printf(const char *fmt, ...);
 void s31_linux_task_yield(void);
 void s31_linux_task_set_priority(void *task, UBaseType_t priority);
@@ -163,6 +168,7 @@ BaseType_t xTaskCreatePinnedToCore(void (*task_func)(void *), const char *name,
 void *xTaskGetCurrentTaskHandle(void);
 UBaseType_t xTaskGetSchedulerState(void);
 void vTaskDelete(void *task);
+UBaseType_t uxTaskPriorityGet(void *task);
 void *pvTaskGetThreadLocalStoragePointer(void *task, int index);
 void vTaskSetThreadLocalStoragePointerAndDelCallback(void *task, int index,
 						     void *value,
@@ -176,6 +182,7 @@ void *xQueueGenericCreateStatic(uint32_t queue_len, uint32_t item_size,
 BaseType_t xQueueGenericGetStaticBuffers(void *queue, uint8_t **storage,
 					 void **static_queue);
 void *xQueueCreateMutex(uint8_t type);
+void *xQueueCreateMutexStatic(uint8_t type, void *static_queue);
 void *xQueueCreateCountingSemaphore(uint32_t max, uint32_t initial);
 void vQueueDelete(void *queue);
 BaseType_t xQueueGenericSend(void *queue, const void *item,

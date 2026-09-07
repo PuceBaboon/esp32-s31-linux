@@ -1,0 +1,185 @@
+#!/bin/sh
+
+USB_SWAP_DEVICE="${S31_USB_SWAP_DEVICE:-auto}"
+USB_SWAP_INIT="${S31_USB_SWAP_INIT:-0}"
+USB_SWAP_WAIT_DS="${S31_USB_SWAP_WAIT_DS:-75}"
+USB_SWAP_SIZE_KIB="${S31_USB_SWAP_SIZE_KIB:-262144}"
+ZRAM_FALLBACK="${S31_ZRAM_FALLBACK:-0}"
+ZRAM_DEV="${S31_ZRAM_DEV:-/dev/zram0}"
+ZRAM_SYS="${S31_ZRAM_SYS:-/sys/block/zram0}"
+ZRAM_SIZE_KIB="${S31_ZRAM_SIZE_KIB:-8192}"
+
+[ -r /etc/default/s31-swap ] && . /etc/default/s31-swap
+
+in_swaps()
+{
+	awk -v dev="$1" '$1 == dev { found = 1 } END { exit !found }' \
+		/proc/swaps 2>/dev/null
+}
+
+swap_size_kib()
+{
+	awk -v dev="$1" '$1 == dev { print $3; exit }' /proc/swaps 2>/dev/null
+}
+
+has_swap_signature()
+{
+	signature="$(dd if="$1" bs=1 skip=4086 count=10 2>/dev/null)"
+	[ "$signature" = SWAPSPACE2 ] || [ "$signature" = SWAP-SPACE ]
+}
+
+disk_has_partitions()
+{
+	disk="${1#/dev/}"
+	for partition in "/sys/class/block/${disk}/${disk}"[0-9]*; do
+		[ -e "$partition" ] && return 0
+	done
+	return 1
+}
+
+find_usb_swap_device()
+{
+	if [ "$USB_SWAP_DEVICE" != auto ]; then
+		[ -b "$USB_SWAP_DEVICE" ] && {
+			printf '%s\n' "$USB_SWAP_DEVICE"
+			return 0
+		}
+		return 1
+	fi
+
+	for device in /dev/sd[a-z][0-9]*; do
+		[ -b "$device" ] || continue
+		printf '%s\n' "$device"
+		return 0
+	done
+	for device in /dev/sd[a-z]; do
+		[ -b "$device" ] || continue
+		disk_has_partitions "$device" && continue
+		printf '%s\n' "$device"
+		return 0
+	done
+	return 1
+}
+
+wait_usb_swap_device()
+{
+	count=0
+	while [ "$count" -lt "$USB_SWAP_WAIT_DS" ]; do
+		device="$(find_usb_swap_device)" && {
+			printf '%s\n' "$device"
+			return 0
+		}
+		sleep 0.1
+		count=$((count + 1))
+	done
+	return 1
+}
+
+start_usb_swap()
+{
+	device="$(wait_usb_swap_device)" || {
+		echo 'Starting USB swap: no /dev/sd* device found'
+		return 1
+	}
+	in_swaps "$device" && {
+		echo "Starting USB swap: already enabled on $device"
+		return 0
+	}
+	case "$USB_SWAP_SIZE_KIB" in
+		''|*[!0-9]*)
+			echo "Starting USB swap: invalid size $USB_SWAP_SIZE_KIB KiB"
+			return 1
+			;;
+	esac
+	if ! has_swap_signature "$device"; then
+		[ "$USB_SWAP_INIT" = 1 ] || {
+			echo "Starting USB swap: $device has no swap signature"
+			return 1
+		}
+		[ "$USB_SWAP_DEVICE" != auto ] || {
+			echo "Starting USB swap: refusing to initialize auto-selected $device"
+			return 1
+		}
+		echo "Starting USB swap: preparing $device (${USB_SWAP_SIZE_KIB:-full} KiB)"
+		if [ "$USB_SWAP_SIZE_KIB" -gt 0 ]; then
+			mkswap "$device" "$USB_SWAP_SIZE_KIB" >/dev/null 2>&1
+		else
+			mkswap "$device" >/dev/null 2>&1
+		fi || {
+			echo "Starting USB swap: mkswap failed on $device"
+			return 1
+		}
+	fi
+	swapon "$device" || {
+		echo "Starting USB swap: swapon failed on $device"
+		return 1
+	}
+	actual_size="$(swap_size_kib "$device")"
+	if [ "$USB_SWAP_INIT" = 1 ] && [ "$USB_SWAP_SIZE_KIB" -gt 0 ] &&
+	   [ "${actual_size:-0}" -gt "$USB_SWAP_SIZE_KIB" ]; then
+		echo "Starting USB swap: limiting $device to $USB_SWAP_SIZE_KIB KiB"
+		swapoff "$device" || return 1
+		mkswap "$device" "$USB_SWAP_SIZE_KIB" >/dev/null 2>&1 || return 1
+		swapon "$device" || return 1
+		actual_size="$(swap_size_kib "$device")"
+	fi
+	echo "Starting USB swap: enabled on $device (${actual_size:-unknown} KiB)"
+}
+
+start_zram_fallback()
+{
+	[ "$ZRAM_FALLBACK" = 1 ] || return 1
+	in_swaps "$ZRAM_DEV" && {
+		echo 'Starting compressed RAM swap: already enabled'
+		return 0
+	}
+
+	if ! [ -d "$ZRAM_SYS" ] && [ -r /sys/class/zram-control/hot_add ]; then
+		cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
+	fi
+	if ! [ -b "$ZRAM_DEV" ] || ! [ -d "$ZRAM_SYS" ]; then
+		echo 'Starting compressed RAM swap: zram0 unavailable'
+		return 1
+	fi
+
+	[ -w "$ZRAM_SYS/comp_algorithm" ] &&
+		{ echo lzo-rle >"$ZRAM_SYS/comp_algorithm" 2>/dev/null ||
+		  echo lzo >"$ZRAM_SYS/comp_algorithm" 2>/dev/null || true; }
+	echo "${ZRAM_SIZE_KIB}K" >"$ZRAM_SYS/disksize" || return 1
+	mkswap "$ZRAM_DEV" >/dev/null 2>&1 || return 1
+	swapon "$ZRAM_DEV" || return 1
+	echo "Starting compressed RAM swap: ${ZRAM_SIZE_KIB} KiB zram0"
+}
+
+start()
+{
+	start_usb_swap && return 0
+	start_zram_fallback && return 0
+	echo 'Starting swap: no swap device enabled'
+	return 0
+}
+
+stop()
+{
+	for device in /dev/sd[a-z][0-9]* /dev/sd[a-z] "$ZRAM_DEV"; do
+		[ -b "$device" ] || continue
+		in_swaps "$device" && swapoff "$device" 2>/dev/null || true
+	done
+	[ -w "$ZRAM_SYS/reset" ] &&
+		echo 1 >"$ZRAM_SYS/reset" 2>/dev/null || true
+	echo 'Stopping swap: OK'
+}
+
+case "$1" in
+	start|stop)
+		"$1"
+		;;
+	restart)
+		stop
+		start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

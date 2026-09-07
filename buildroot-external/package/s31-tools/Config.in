@@ -3,4 +3,5 @@ config BR2_PACKAGE_S31_TOOLS
 	default y
 	help
 	  Installs the ESP32-S31 MMU diagnostics, memory benchmark and
-	  Bluetooth scanner.
+	  dynamic device-tree overlay manager. Standard Linux packages
+	  provide Wi-Fi, Bluetooth and GPIO userspace tools.

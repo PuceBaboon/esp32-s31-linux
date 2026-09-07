@@ -1,0 +1,88 @@
+#!/bin/sh
+
+pidfile=/run/s31-btstack-a2dp.pid
+logfile=/run/s31-btstack-a2dp.log
+bt_conf=/etc/esp32-conf/bluetooth.conf
+executable=/usr/sbin/s31-btstack-a2dp
+
+recovery_mode()
+{
+	grep -qw 's31.radio_autoload=0' /proc/cmdline 2>/dev/null
+}
+
+enabled()
+{
+	[ "$(sed -n 's/^enabled=//p' "$bt_conf" 2>/dev/null | tail -n 1)" = 1 ]
+}
+
+wait_controller()
+{
+	count=0
+	while [ "$count" -lt 100 ]; do
+		[ -c /dev/s31-hci ] && return 0
+		sleep 0.1
+		count=$((count + 1))
+	done
+	return 1
+}
+
+running()
+{
+	[ -r "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null
+}
+
+case "$1" in
+start)
+	recovery_mode && {
+		echo 'BTstack: skipped by s31.radio_autoload=0 recovery mode'
+		exit 0
+	}
+	enabled || exit 0
+	running && exit 0
+        wait_controller || {
+                echo 'BTstack: direct-HCI controller endpoint is not ready' >&2
+                exit 1
+        }
+	mkdir -p /var/lib/btstack
+	chmod 0700 /var/lib/btstack
+	rm -f "$pidfile" "$logfile"
+	coex=0
+	[ "$(cat /sys/module/esp32s31_radio/parameters/mode 2>/dev/null)" = combo ] && coex=1
+	S31_HCI_DEVICE=/dev/s31-hci \
+		S31_BTSTACK_COEX="$coex" \
+		"$executable" -u 0 -l none >>"$logfile" 2>&1 &
+	pid=$!
+	printf '%s\n' "$pid" >"$pidfile"
+	sleep 1
+	if ! kill -0 "$pid" 2>/dev/null; then
+		echo 'BTstack: A2DP sink exited during startup' >&2
+		cat "$logfile" >&2
+		rm -f "$pidfile"
+		exit 1
+	fi
+	echo 'BTstack: A2DP sink and BLE GATT peripheral ready on /dev/s31-hci'
+	;;
+stop)
+	if running; then
+		start-stop-daemon --stop --quiet --retry TERM/5/KILL/1 \
+			--pidfile "$pidfile" --exec "$executable" || true
+	fi
+	rm -f "$pidfile"
+	;;
+restart)
+	"$0" stop
+	"$0" start
+	;;
+status)
+	if running; then
+		echo 'BTstack A2DP sink is running.'
+	else
+		echo 'BTstack A2DP sink is stopped.'
+		return 1
+	fi
+	;;
+*)
+	echo "Usage: $0 {start|stop|restart|status}" >&2
+	exit 1
+	;;
+esac

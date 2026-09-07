@@ -20,12 +20,15 @@
 #define OVERLAY_PREFIX "esp32s31-overlay-"
 #define OVERLAY_SUFFIX ".dtbo"
 #define CURRENT_FILE "/run/s31-overlay.current"
-#define PERSIST_FILE "/etc/s31-conf/s31-overlay.conf"
+#define CONFIG_DIR "/etc/esp32-conf"
+#define PERSIST_FILE CONFIG_DIR "/overlays.conf"
 #define MAX_DTBO_SIZE (128U * 1024U)
 #define MAX_OVERLAYS 32
 #define NAME_LEN 32
 /* Persistent settings live in the merged root's JFFS2 upperdir. */
 #define CONFIG_LEN 2024
+#define DWC2_DRIVER_DIR "/sys/bus/platform/drivers/dwc2"
+#define DWC2_DEVICE "20300000.usb"
 
 #define S31_OVERLAY_IOC_MAGIC 'O'
 #define S31_OVERLAY_IOC_REMOVE_ALL _IO(S31_OVERLAY_IOC_MAGIC, 0)
@@ -70,7 +73,8 @@ static int valid_gpio(unsigned int gpio)
 {
 	/* GPIO26..32 are occupied by the live XIP flash interface. */
 	return gpio < 62 && (gpio < 26 || gpio > 32) &&
-	       gpio != 33 && gpio != 34 && gpio != 41;
+	       gpio != 33 && gpio != 34 && gpio != 41 &&
+	       gpio != 58 && gpio != 59;
 }
 
 static int read_persist(char *config, size_t config_size, int *best_slot,
@@ -118,7 +122,7 @@ static int write_persist(const char *config)
 		errno = E2BIG;
 		return -1;
 	}
-	if (mkdir("/etc/s31-conf", 0755) && errno != EEXIST)
+	if (mkdir(CONFIG_DIR, 0700) && errno != EEXIST)
 		return -1;
 	snprintf(temporary, sizeof(temporary), "%s.tmp", persist_file());
 	fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -182,6 +186,54 @@ static int manager_remove(const char *name)
 	return ret;
 }
 
+static int has_active_overlay(const struct overlay_list *list, const char *name)
+{
+	uint32_t i;
+
+	for (i = 0; i < list->count; i++)
+		if (!strcmp(list->items[i].name, name))
+			return 1;
+	return 0;
+}
+
+static int write_driver_control(const char *control)
+{
+	char path[256];
+	size_t length = strlen(DWC2_DEVICE);
+	int fd;
+
+	snprintf(path, sizeof(path), "%s/%s", DWC2_DRIVER_DIR, control);
+	fd = open(path, O_WRONLY);
+	if (fd < 0)
+		return -1;
+	if (write(fd, DWC2_DEVICE, length) != (ssize_t)length) {
+		int saved = errno ?: EIO;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	return close(fd);
+}
+
+/* dr_mode is sampled only when DWC2 probes, not when an OF property changes. */
+static int reprobe_usb(void)
+{
+	char bound[256];
+
+	snprintf(bound, sizeof(bound), "%s/%s", DWC2_DRIVER_DIR, DWC2_DEVICE);
+	if (!access(bound, F_OK) && write_driver_control("unbind"))
+		return -1;
+	return write_driver_control("bind");
+}
+
+static int spec_is_usb_device(const char *spec)
+{
+	size_t length = strlen("usb-device");
+
+	return !strncmp(spec, "usb-device", length) &&
+	       (!spec[length] || isspace((unsigned char)spec[length]));
+}
+
 static int load_blob(const char *name, void **blob, size_t *size)
 {
 	char path[256];
@@ -222,9 +274,9 @@ static int patch_route(void *blob, const char *assignment)
 {
 	char route[64], *end;
 	const char *kind, *node_route;
-	const fdt32_t *pinmux;
+	fdt32_t *pinmux;
 	unsigned long gpio;
-	int depth = 0, len, node = -1, found = 0;
+	int depth = 0, len, node = -1, found = 0, i, count;
 	size_t route_len = strcspn(assignment, "=");
 
 	if (!assignment[route_len] || !route_len || route_len >= sizeof(route)) {
@@ -240,32 +292,126 @@ static int patch_route(void *blob, const char *assignment)
 		return -1;
 	}
 	while ((node = fdt_next_node(blob, node, &depth)) >= 0) {
+		count = fdt_stringlist_count(blob, node,
+					     "espressif,route-names");
+		if (count > 0) {
+			pinmux = fdt_getprop_w(blob, node, "pinmux", &len);
+			if (!pinmux || len != count * (int)sizeof(*pinmux)) {
+				errno = EINVAL;
+				return -1;
+			}
+			for (i = 0; i < count; i++) {
+				node_route = fdt_stringlist_get(blob, node,
+						"espressif,route-names", i, NULL);
+				if (!node_route || strcmp(node_route, route))
+					continue;
+				kind = fdt_stringlist_get(blob, node,
+						"espressif,route-kinds", i, NULL);
+				if (!kind || (strcmp(kind, "matrix-input") &&
+					     strcmp(kind, "matrix-output") &&
+					     strcmp(kind, "matrix-bidirectional"))) {
+					errno = EOPNOTSUPP;
+					return -1;
+				}
+				pinmux[i] = cpu_to_fdt32(
+					(fdt32_to_cpu(pinmux[i]) & ~0xffU) | gpio);
+				found++;
+			}
+		}
 		node_route = fdt_getprop(blob, node, "espressif,route-name", &len);
 		if (!node_route || strcmp(node_route, route))
 			continue;
 		kind = fdt_getprop(blob, node, "espressif,route-kind", &len);
 		if (!kind || (strcmp(kind, "matrix-input") &&
-			     strcmp(kind, "matrix-output"))) {
+			     strcmp(kind, "matrix-output") &&
+			     strcmp(kind, "matrix-bidirectional"))) {
 			errno = EOPNOTSUPP;
 			return -1;
 		}
-		pinmux = fdt_getprop(blob, node, "pinmux", &len);
-		if (!pinmux || len != sizeof(*pinmux)) {
+		pinmux = fdt_getprop_w(blob, node, "pinmux", &len);
+		if (!pinmux || len <= 0 || len % sizeof(*pinmux)) {
 			errno = EINVAL;
 			return -1;
 		}
-		if (fdt_setprop_inplace_u32(blob, node, "pinmux",
-					(fdt32_to_cpu(*pinmux) & ~0xffU) | gpio)) {
-			errno = EINVAL;
-			return -1;
-		}
+		for (i = 0; i < len / (int)sizeof(*pinmux); i++)
+			pinmux[i] = cpu_to_fdt32((fdt32_to_cpu(pinmux[i]) & ~0xffU) |
+						 gpio);
 		found++;
 	}
-	if (found != 1) {
-		errno = found ? EEXIST : ENOENT;
+	if (!found) {
+		errno = ENOENT;
 		return -1;
 	}
 	return 0;
+}
+
+/* Patch an explicitly exported scalar overlay parameter.  Keeping the
+ * allow-list in the DTBO means arbitrary live-tree properties cannot be
+ * changed through the command line. */
+static int patch_parameter(void *blob, const char *assignment)
+{
+	char parameter[64], *end;
+	const char *node_parameter;
+	const fdt32_t *values;
+	fdt32_t *property;
+	unsigned long value;
+	int depth = 0, len, node = -1, found = 0, i, count;
+	size_t parameter_len = strcspn(assignment, "=");
+
+	if (!assignment[parameter_len] || !parameter_len ||
+	    parameter_len >= sizeof(parameter)) {
+		errno = EINVAL;
+		return -1;
+	}
+	memcpy(parameter, assignment, parameter_len);
+	parameter[parameter_len] = '\0';
+	errno = 0;
+	value = strtoul(assignment + parameter_len + 1, &end, 0);
+	if (errno || *end || value > UINT32_MAX) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	while ((node = fdt_next_node(blob, node, &depth)) >= 0) {
+		node_parameter = fdt_getprop(blob, node,
+					     "espressif,param-name", &len);
+		if (!node_parameter || strcmp(node_parameter, parameter))
+			continue;
+		values = fdt_getprop(blob, node, "espressif,param-values", &len);
+		if (!values || len <= 0 || len % sizeof(*values)) {
+			errno = EINVAL;
+			return -1;
+		}
+		count = len / sizeof(*values);
+		for (i = 0; i < count; i++)
+			if (fdt32_to_cpu(values[i]) == value)
+				break;
+		if (i == count) {
+			errno = ERANGE;
+			return -1;
+		}
+		property = fdt_getprop_w(blob, node, parameter, &len);
+		if (!property || len != sizeof(*property)) {
+			errno = EINVAL;
+			return -1;
+		}
+		*property = cpu_to_fdt32(value);
+		found++;
+	}
+	if (!found) {
+		errno = ENOENT;
+		return -1;
+	}
+	return 0;
+}
+
+static int patch_assignment(void *blob, const char *assignment)
+{
+	if (!patch_parameter(blob, assignment))
+		return 0;
+	if (errno != ENOENT)
+		return -1;
+	return patch_route(blob, assignment);
 }
 
 static int apply_spec(const char *spec)
@@ -284,7 +430,7 @@ static int apply_spec(const char *spec)
 	if (!name || !valid_name(name) || load_blob(name, &blob, &size))
 		return -1;
 	while ((token = strtok_r(NULL, " \t", &save)))
-		if (patch_route(blob, token))
+		if (patch_assignment(blob, token))
 			goto out;
 	fd = open(OVERLAY_DEVICE, O_WRONLY);
 	if (fd < 0)
@@ -383,9 +529,13 @@ static void list_overlays(void)
 
 static int list_routes(const char *name)
 {
+	struct shown_route {
+		const char *name;
+		uint32_t gpio;
+	} shown[64];
 	void *blob;
 	size_t size;
-	int node = -1, depth = 0, len, found = 0;
+	int node = -1, depth = 0, len, found = 0, shown_count = 0;
 
 	if (load_blob(name, &blob, &size))
 		return -1;
@@ -394,15 +544,103 @@ static int list_routes(const char *name)
 						"espressif,route-name", &len);
 		const char *kind;
 		const fdt32_t *pinmux;
+		uint32_t gpio;
+		int i;
+		int count = fdt_stringlist_count(blob, node,
+						 "espressif,route-names");
+
+		if (count > 0) {
+			pinmux = fdt_getprop(blob, node, "pinmux", &len);
+			if (!pinmux || len != count * (int)sizeof(*pinmux)) {
+				free(blob);
+				errno = EINVAL;
+				return -1;
+			}
+			for (i = 0; i < count; i++) {
+				route = fdt_stringlist_get(blob, node,
+						"espressif,route-names", i, NULL);
+				kind = fdt_stringlist_get(blob, node,
+						"espressif,route-kinds", i, NULL);
+				if (!route || !kind)
+					continue;
+				gpio = fdt32_to_cpu(pinmux[i]) & 0xff;
+				printf("%s=%u\n", route, gpio);
+				found++;
+			}
+			continue;
+		}
+
 		if (!route)
 			continue;
 		kind = fdt_getprop(blob, node, "espressif,route-kind", &len);
 		pinmux = fdt_getprop(blob, node, "pinmux", &len);
-		if (kind && pinmux && len == sizeof(*pinmux)) {
-			printf("%s=%u (%s)\n", route,
-			       fdt32_to_cpu(*pinmux) & 0xff, kind);
+		if (kind && pinmux && len >= (int)sizeof(*pinmux) &&
+		    !(len % sizeof(*pinmux))) {
+			gpio = fdt32_to_cpu(*pinmux) & 0xff;
+			for (i = 0; i < shown_count; i++) {
+				if (strcmp(shown[i].name, route))
+					continue;
+				if (shown[i].gpio != gpio) {
+					fprintf(stderr,
+						"route %s has conflicting GPIO values\n",
+						route);
+					free(blob);
+					errno = EINVAL;
+					return -1;
+				}
+				break;
+			}
+			if (i < shown_count)
+				continue;
+			if ((size_t)shown_count == sizeof(shown) / sizeof(shown[0])) {
+				free(blob);
+				errno = E2BIG;
+				return -1;
+			}
+			shown[shown_count].name = route;
+			shown[shown_count++].gpio = gpio;
+			printf("%s=%u\n", route, gpio);
 			found++;
 		}
+	}
+	free(blob);
+	return found ? 0 : 1;
+}
+
+static int list_parameters(const char *name)
+{
+	void *blob;
+	size_t size;
+	int node = -1, depth = 0, len, found = 0;
+
+	if (load_blob(name, &blob, &size))
+		return -1;
+	while ((node = fdt_next_node(blob, node, &depth)) >= 0) {
+		const char *parameter = fdt_getprop(blob, node,
+						    "espressif,param-name", &len);
+		const fdt32_t *property, *values;
+		int i, count;
+
+		if (!parameter)
+			continue;
+		property = fdt_getprop(blob, node, parameter, &len);
+		if (!property || len != sizeof(*property)) {
+			free(blob);
+			errno = EINVAL;
+			return -1;
+		}
+		values = fdt_getprop(blob, node, "espressif,param-values", &len);
+		if (!values || len <= 0 || len % sizeof(*values)) {
+			free(blob);
+			errno = EINVAL;
+			return -1;
+		}
+		count = len / sizeof(*values);
+		printf("%s=%u values=", parameter, fdt32_to_cpu(*property));
+		for (i = 0; i < count; i++)
+			printf("%s%u", i ? "," : "", fdt32_to_cpu(values[i]));
+		putchar('\n');
+		found++;
 	}
 	free(blob);
 	return found ? 0 : 1;
@@ -412,8 +650,8 @@ static void usage(const char *program)
 {
 	fprintf(stderr,
 		"Usage:\n"
-		"  %s list|status|restore|routes NAME\n"
-		"  %s apply NAME [ROUTE=GPIO ...] [--volatile]\n"
+		"  %s list|status|restore|routes NAME|parameters NAME\n"
+		"  %s apply NAME [KEY=VALUE ...] [--volatile]\n"
 		"  %s remove NAME|--all [--volatile]\n", program, program, program);
 }
 
@@ -438,6 +676,12 @@ int main(int argc, char **argv)
 			perror("list routes");
 		return !!ret;
 	}
+	if (!strcmp(argv[1], "parameters") && argc == 3) {
+		ret = list_parameters(argv[2]);
+		if (ret < 0)
+			perror("list parameters");
+		return !!ret;
+	}
 	if (!strcmp(argv[1], "status")) {
 		if (manager_list(&active)) {
 			perror("list active overlays");
@@ -455,11 +699,19 @@ int main(int argc, char **argv)
 		return 0;
 	}
 	if (!strcmp(argv[1], "restore")) {
+		int usb_was_active = 0;
+
 		if (read_persist(config, sizeof(config), &slot, &sequence))
 			return errno == ENODATA || errno == ENODEV || errno == ENOENT ?
 				0 : 1;
+		if (!manager_list(&active))
+			usb_was_active = has_active_overlay(&active, "usb-device");
 		if (manager_remove(NULL) && errno != ENOENT)
 			return 1;
+		if (usb_was_active && reprobe_usb()) {
+			perror("reprobe USB host");
+			return 1;
+		}
 		strcpy(persisted, config);
 		{
 			char *save, *line;
@@ -468,6 +720,12 @@ int main(int argc, char **argv)
 				if (apply_spec(line)) {
 					perror(line);
 					manager_remove(NULL);
+					return 1;
+				}
+				if (spec_is_usb_device(line) && reprobe_usb()) {
+					perror("reprobe USB device");
+					manager_remove("usb-device");
+					reprobe_usb();
 					return 1;
 				}
 			}
@@ -498,6 +756,12 @@ int main(int argc, char **argv)
 			perror("apply overlay");
 			return 1;
 		}
+		if (spec_is_usb_device(spec) && reprobe_usb()) {
+			perror("reprobe USB device");
+			manager_remove("usb-device");
+			reprobe_usb();
+			return 1;
+		}
 		if (read_current(config, sizeof(config)) ||
 		    update_config(config, sizeof(config), argv[2], spec) ||
 		    write_current(config) || (persist && write_persist(config))) {
@@ -508,6 +772,7 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(argv[1], "remove")) {
 		const char *name;
+		int usb_was_active = 0;
 		if (argc < 3 || argc > 4) {
 			usage(argv[0]);
 			return 2;
@@ -521,8 +786,15 @@ int main(int argc, char **argv)
 		name = !strcmp(argv[2], "--all") ? NULL : argv[2];
 		if (name && !valid_name(name))
 			return 2;
+		if ((!name || !strcmp(name, "usb-device")) &&
+		    !manager_list(&active))
+			usb_was_active = has_active_overlay(&active, "usb-device");
 		if (manager_remove(name)) {
 			perror("remove overlay");
+			return 1;
+		}
+		if (usb_was_active && reprobe_usb()) {
+			perror("reprobe USB host");
 			return 1;
 		}
 		if (read_current(config, sizeof(config)) ||

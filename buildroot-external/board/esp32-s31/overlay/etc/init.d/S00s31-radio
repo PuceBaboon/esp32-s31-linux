@@ -1,0 +1,132 @@
+#!/bin/sh
+
+radio_status=/proc/device-tree/soc/radio/status
+radio_mount=/run/s31-radio
+wifi_status=/proc/device-tree/soc/radio/wifi/status
+bluetooth_status=/proc/device-tree/soc/radio/bluetooth/status
+module_name=esp32s31_radio
+overlay_option=
+
+case "${S31_RADIO_VOLATILE_MODE:-}" in
+wifi|bt|combo) overlay_option=--volatile ;;
+'') ;;
+*) echo 'S31_RADIO_VOLATILE_MODE must be wifi, bt, or combo' >&2; exit 2 ;;
+esac
+
+setting_enabled()
+{
+	[ "$(sed -n 's/^enabled=//p' "$1" 2>/dev/null | tail -n 1)" = 1 ]
+}
+
+node_enabled()
+{
+	grep -qx okay "$1" 2>/dev/null
+}
+
+module_loaded()
+{
+	grep -q "^${module_name} " /proc/modules 2>/dev/null
+}
+
+remove_radio_profiles()
+{
+	for old_profile in radio-combo radio-wifi radio-bluetooth; do
+		/usr/sbin/s31-overlay remove "$old_profile" $overlay_option \
+			>/dev/null 2>&1 || true
+	done
+}
+
+mount_radio_bundle()
+{
+	grep -q " ${radio_mount} " /proc/mounts 2>/dev/null && return 0
+	radio_dev=''
+	for name_path in /sys/class/mtd/mtd*/name; do
+		[ -r "$name_path" ] || continue
+		[ "$(cat "$name_path")" = radio-bundle ] || continue
+		mtd_name="${name_path#/sys/class/mtd/mtd}"
+		mtd_name="${mtd_name%/name}"
+		radio_dev="/dev/mtdblock${mtd_name}"
+		break
+	done
+	[ -b "$radio_dev" ] || {
+		echo 'ESP32-S31 radio-bundle MTD device is missing' >&2
+		return 1
+	}
+	mkdir -p "$radio_mount"
+	mount -t squashfs -o ro "$radio_dev" "$radio_mount"
+}
+
+stop_radio()
+{
+	module_loaded || return 0
+	/usr/sbin/s31-modload --remove "$module_name"
+}
+
+start_radio()
+{
+	grep -qw 's31.radio_autoload=0' /proc/cmdline && return 0
+	wifi=0
+	bluetooth=0
+	have_wifi=0
+	have_bluetooth=0
+	case "${S31_RADIO_VOLATILE_MODE:-}" in
+	wifi) wifi=1 ;;
+	bt) bluetooth=1 ;;
+	combo) wifi=1; bluetooth=1 ;;
+	*)
+		setting_enabled /etc/esp32-conf/wifi.conf && wifi=1
+		setting_enabled /etc/esp32-conf/bluetooth.conf && bluetooth=1
+		;;
+	esac
+	node_enabled "$wifi_status" && have_wifi=1
+	node_enabled "$bluetooth_status" && have_bluetooth=1
+	case "${wifi}:${bluetooth}" in
+	1:1) profile=radio-combo; mode=combo ;;
+	1:0) profile=radio-wifi; mode=wifi ;;
+	0:1) profile=radio-bluetooth; mode=bt ;;
+	*) stop_radio; remove_radio_profiles; return 0 ;;
+	esac
+
+	if module_loaded; then
+		current_mode=$(cat /sys/module/esp32s31_radio/parameters/mode 2>/dev/null)
+		[ "$current_mode" = "$mode" ] && return 0
+		stop_radio || {
+			echo 'ESP32-S31 radio is busy; stop Wi-Fi/BT users before changing mode' >&2
+			return 1
+		}
+	fi
+
+	if [ "${wifi}:${bluetooth}" != "${have_wifi}:${have_bluetooth}" ]; then
+		remove_radio_profiles
+		/usr/sbin/s31-overlay apply "$profile" $overlay_option || return 1
+	fi
+	grep -qx okay "$radio_status" 2>/dev/null || return 0
+	mount_radio_bundle || return 1
+
+	module_file="${radio_mount}/module/esp32s31-radio.ko.xz"
+	[ -f "$module_file" ] || {
+		echo 'ESP32-S31 single radio module is missing' >&2
+		return 1
+	}
+	[ -f "${radio_mount}/firmware/esp32s31-radio-fw-v1.o.xz" ] || {
+		echo 'ESP32-S31 external radio payload is missing' >&2
+		return 1
+	}
+	if [ -w /sys/module/firmware_class/parameters/path ]; then
+		echo "${radio_mount}/firmware" > /sys/module/firmware_class/parameters/path
+	fi
+
+	# Reclaim disposable SquashFS cache before the compressed module and
+	# external ELF payload are expanded on this 16 MiB target.
+	sync
+	[ ! -w /proc/sys/vm/drop_caches ] || echo 3 > /proc/sys/vm/drop_caches
+	/usr/sbin/s31-modload "$module_file" "mode=$mode" direct_hci=1 \
+		firmware=esp32s31-radio-fw-v1.o
+}
+
+case "$1" in
+start) start_radio ;;
+stop) stop_radio ;;
+restart) stop_radio && start_radio ;;
+*) echo "usage: $0 {start|stop|restart}" >&2; exit 2 ;;
+esac

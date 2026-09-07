@@ -1,0 +1,12 @@
+build*/
+build-staging/
+linux/
+linux
+sdkconfig.old
+
+rootfs/*.bak
+rootfs/*.log
+rootfs/busybox
+rootfs/rootfs.list
+rootfs/staging/
+rootfs/test_shell.py

@@ -14,14 +14,16 @@ CC := $(CROSS_COMPILE)gcc
 CPP := $(CROSS_COMPILE)cpp
 DTC := dtc
 JOBS ?= $(shell nproc)
+S31_BTSTACK_O2 ?= 0
 
-# Xesploop is available to normal userspace on both HP harts.  XespV exists
-# only on hart 1, so keep it out of the global compiler ISA and expose it
+# Keep ordinary userspace on scalar RISC-V/FPU/Zb code.  Xesploop state is
+# preserved for explicit tests, but it cannot be safely left live across all
+# S-mode return paths used by arbitrary libraries.  XespV remains per-package
 # through libesp-simd, whose initializer pins users to hart 1 before executing
 # vector instructions.  Kernel and firmware code must remain integer-safe.
 S31_SAFE_ISA := rv32imabc_zicsr_zifencei_zaamo_zalrsc_zba_zbb_zbc_zbs
 S31_KERNEL_ISA := rv32imafbc_zicsr_zifencei_zaamo_zalrsc_zba_zbb_zbc_zbs
-S31_USER_ISA := rv32imafbc_zicsr_zifencei_zaamo_zalrsc_zba_zbb_zbc_zbs_xesploop
+S31_USER_ISA := rv32imafbc_zicsr_zifencei_zaamo_zalrsc_zba_zbb_zbc_zbs
 S31_COMMON_FLAGS := -mabi=ilp32 -mtune=esp-base
 S31_KERNEL_FLAGS := -mabi=ilp32f -mtune=esp-base
 S31_USER_FLAGS := -march=$(S31_USER_ISA) $(S31_COMMON_FLAGS)
@@ -30,7 +32,7 @@ BUILD_DIR := $(CURDIR)/build
 OPENSBI_DIR := $(CURDIR)/opensbi-esp32-s31
 LINUX_DIR := $(CURDIR)/linux-esp32-s31
 UBOOT_DIR := $(CURDIR)/u-boot-esp32-s31
-BOOTLOADER_DIR := $(CURDIR)/bootloader
+RADIO_IDF_DEPS_DIR := $(CURDIR)/radio_firmware/idf_deps
 BUILDROOT_DIR := $(CURDIR)/buildroot
 BUILDROOT_EXTERNAL := $(CURDIR)/buildroot-external
 
@@ -40,6 +42,7 @@ LINUX_OUT := $(BUILD_DIR)/linux-6.18
 UBOOT_OUT := $(BUILD_DIR)/u-boot
 BUILDROOT_OUT := $(BUILD_DIR)/buildroot
 BUILDROOT_DL_DIR := $(BUILD_DIR)/buildroot-dl
+BTSTACK_SOURCE_DIR := $(BUILD_DIR)/btstack-source
 COREMARK_OUT := $(BUILD_DIR)/coremark
 COREMARK_BIN := $(COREMARK_OUT)/coremark.exe
 TOOLCHAIN_ARCHIVE := $(BUILD_DIR)/downloads/$(TOOLCHAIN_RELEASE_ASSET)
@@ -52,6 +55,7 @@ UBOOT_ITB := $(BUILD_DIR)/u-boot.itb
 UBOOT_SPL_DTB := $(BUILD_DIR)/u-boot-spl-dtb.bin
 SPL_APP_BIN := $(BUILD_DIR)/spl_app.bin
 ROOTFS_IMG := $(BUILD_DIR)/rootfs.sqfs
+RADIO_FS_IMG := $(BUILD_DIR)/radio.sqfs
 PERSIST_IMG := $(BUILD_DIR)/persist.jffs2
 
 IDF_ROOT ?= $(HOME)/.espressif
@@ -59,9 +63,10 @@ IDF_ROOT ?= $(HOME)/.espressif
 # checkout is preferred, with an installed alternate accepted as a fallback.
 IDF_EXPORT ?= $(firstword $(wildcard $(IDF_ROOT)/master/esp-idf/export.sh) $(wildcard $(IDF_PATH)/export.sh) $(shell find $(IDF_ROOT) -maxdepth 5 -type f -path '*/esp-idf/export.sh' 2>/dev/null | sort | head -n 1))
 
-.PHONY: all download toolchain toolchain-source idf-check opensbi uboot flash-image radio-linux-payload radio-bootloader radio-image linux coremark rootfs initramfs s31-pie-cases \
+.PHONY: all download toolchain toolchain-source idf-check opensbi uboot flash-image radio-linux-payload radio-idf-deps radio-module radio-package radio-fs radio-image linux coremark rootfs initramfs s31-pie-cases btstack-source btstack-notices \
 	buildroot-menuconfig buildroot-clean clean fullclean flash-opensbi flash-linux \
-	flash-dtb flash-rootfs persist flash-persist bootloader flash-bootloader flash-all erase
+	flash-dtb flash-radio flash-rootfs flash-existing-radio flash-existing-rootfs \
+	persist flash-persist bootloader flash-bootloader flash-all erase
 
 all: toolchain download uboot linux rootfs flash-image
 
@@ -188,22 +193,29 @@ uboot: idf-check opensbi | $(UBOOT_OUT)
 		--flash-mode dio --flash-freq 80m --flash-size 16MB \
 		--output $(SPL_APP_BIN) $$work/spl_wrapped.elf"
 
-RADIO_BOOT_BUILD := $(BOOTLOADER_DIR)/build-radio
+RADIO_IDF_BUILD := $(RADIO_IDF_DEPS_DIR)/build-radio
 RADIO_PARTITION_SIZE := 1966080
 RADIO_PAYLOAD := $(BUILD_DIR)/radio-fw-payload.bin
 
 idf-check:
 	@test -f "$(IDF_EXPORT)" || { echo "ERROR: ESP-IDF export.sh not found under $(IDF_ROOT)" >&2; exit 1; }
 
-radio-bootloader: idf-check
-	@echo "--- Build radio-only loader ---"
-	bash -c "source $(IDF_EXPORT) && cd $(BOOTLOADER_DIR) && \
-		S31_RADIO_DEPS=1 idf.py -B build-radio \
-		-D SDKCONFIG=$(RADIO_BOOT_BUILD)/sdkconfig \
-		-D 'SDKCONFIG_DEFAULTS=$(BOOTLOADER_DIR)/sdkconfig;$(BOOTLOADER_DIR)/sdkconfig.radio.defaults' \
-		reconfigure build"
+radio-idf-deps: idf-check
+	@echo "--- Build ESP-IDF radio dependency closure ---"
+	bash -c "source $(IDF_EXPORT) && cd $(RADIO_IDF_DEPS_DIR) && \
+		rm -f build-radio/sdkconfig build-radio/sdkconfig.old && \
+		idf.py -B build-radio \
+		-D SDKCONFIG=$(RADIO_IDF_BUILD)/sdkconfig \
+		-D 'SDKCONFIG_DEFAULTS=$(RADIO_IDF_DEPS_DIR)/sdkconfig.defaults;$(RADIO_IDF_DEPS_DIR)/sdkconfig.radio.defaults' \
+		reconfigure && \
+		targets=\$$(comm -12 \
+			<(sed -n 's|^\(esp-idf/.*\\.a\)$$|\1|p' ../boot_link.txt | sort -u) \
+			<(ninja -C build-radio -t targets all | \
+			  sed -n 's|^\(esp-idf/.*\\.a\):.*|\1|p' | sort -u)) && \
+		test -n \"\$$targets\" && \
+		ninja -C build-radio -j$(JOBS) \$$targets"
 
-RADIO_LINUX_CMDLINE := console=ttyS0,115200n8 root=mtd:rootfs rootfstype=squashfs ro rootwait init=/init clk_ignore_unused
+RADIO_LINUX_CMDLINE := console=ttyS0,115200n8 rootfstype=squashfs ro init=/init
 
 radio-image: LINUX_CMDLINE := $(RADIO_LINUX_CMDLINE)
 radio-image: opensbi linux
@@ -230,15 +242,63 @@ radio-image: opensbi linux
 DEFCONFIG ?= esp32s31_defconfig
 LINUX_TARGET ?= xipImage
 S31_WIFI_ONLY ?= 0
+# The 16 MiB radio image keeps only the devices needed for Wi-Fi/Bluetooth,
+# the console, flash/persist and USB mass-storage swap.  Set this to 0 when
+# building an image intended to load the optional peripheral overlays.
+S31_LEAN_RADIO ?= 1
 # CMDLINE_FORCE replaces, rather than extends, the defconfig command line, so
 # retain the rootfs and console arguments here as well.  Both HP harts start by
 # default; normal device IRQs remain pinned to hart 0 via irqaffinity=0.
-LINUX_CMDLINE ?= earlycon=esp32s31uart,mmio,0x2038a000,115200 console=ttyS0,115200n8 root=/dev/mtdblock5 rootfstype=squashfs ro rootwait init=/init clk_ignore_unused irqaffinity=0
-LINUX_PARTITION_SIZE := 6291456
+LINUX_CMDLINE ?= earlycon=esp32s31uart,mmio,0x2038a000,115200 console=ttyS0,115200n8 rootfstype=squashfs ro init=/init irqaffinity=0 esp32s31_idle=wfi
+LINUX_PARTITION_SIZE := 6488064
 
-radio-linux-payload: radio-bootloader
+radio-linux-payload: radio-idf-deps
 	$(MAKE) -C $(CURDIR)/radio_firmware IDF_ROOT="$(IDF_ROOT)" \
-		S31_WIFI_ONLY="$(S31_WIFI_ONLY)" linux-kbuild
+		IDF_DEPS_DIR="$(RADIO_IDF_DEPS_DIR)" \
+		S31_WIFI_ONLY=0 linux-kbuild
+
+radio-module: linux
+	@test -f "$(LINUX_OUT)/drivers/platform/esp32s31-radio.ko"
+	@test -f "$(BUILD_DIR)/esp32s31-radio-fw-v1.o"
+	@echo "Radio module: $(LINUX_OUT)/drivers/platform/esp32s31-radio.ko"
+	@echo "External payload: $(BUILD_DIR)/esp32s31-radio-fw-v1.o"
+
+radio-package:
+	+$(CURDIR)/tools/build_radio_bundle.sh
+
+RADIO_FS_PARTITION_SIZE ?= 2031616
+radio-fs: linux rootfs
+	@echo "--- ESP32-S31 integrated radio bundle ---"
+	rm -rf $(BUILD_DIR)/radiofs-staging
+	mkdir -p $(BUILD_DIR)/radiofs-staging/module $(BUILD_DIR)/radiofs-staging/firmware \
+		$(BUILD_DIR)/radiofs-staging/overlays \
+		$(BUILD_DIR)/radiofs-staging/config
+	cp $(LINUX_OUT)/drivers/platform/esp32s31-radio.ko \
+		$(BUILD_DIR)/radiofs-staging/module/esp32s31-radio.ko
+	cp $(BUILD_DIR)/esp32s31-radio-fw-v1.o \
+		$(BUILD_DIR)/radiofs-staging/firmware/esp32s31-radio-fw-v1.o
+	$(CROSS_COMPILE)strip --strip-debug \
+		$(BUILD_DIR)/radiofs-staging/module/*.ko
+	# Keep the in-kernel XZ decoder's temporary dictionary small.  A 1 MiB
+	# dictionary leaves too few contiguous pages for the radio kthreads during
+	# early boot on the 16 MiB board; 256 KiB costs only a few KiB in flash.
+	xz --check=crc32 --lzma2=dict=256KiB -f \
+		$(BUILD_DIR)/radiofs-staging/module/*.ko
+	xz --check=crc32 --lzma2=dict=256KiB -f \
+		$(BUILD_DIR)/radiofs-staging/firmware/*.o
+	cp $(LINUX_OUT)/arch/riscv/boot/dts/espressif/esp32s31-overlay-radio-*.dtbo \
+		$(BUILD_DIR)/radiofs-staging/overlays/
+	cp radio_firmware/idf_deps/sdkconfig.defaults \
+		radio_firmware/idf_deps/sdkconfig.radio.defaults \
+		$(BUILD_DIR)/radiofs-staging/config/
+	cp radio_firmware/RADIO_BUNDLE_LICENSES.md $(BUILD_DIR)/radiofs-staging/
+	$(BUILDROOT_OUT)/host/bin/mksquashfs $(BUILD_DIR)/radiofs-staging \
+		$(RADIO_FS_IMG) -noappend -all-root -processors $(JOBS) -b 64K -comp xz
+	@size=$$(stat -c%s $(RADIO_FS_IMG)); \
+	echo "Radio bundle: $$size / $(RADIO_FS_PARTITION_SIZE) bytes ($$(( $(RADIO_FS_PARTITION_SIZE) - $$size )) bytes free)"; \
+	if [ $$size -gt $(RADIO_FS_PARTITION_SIZE) ]; then \
+		echo "ERROR: radio bundle exceeds its flash partition"; exit 1; \
+	fi
 
 linux: toolchain radio-linux-payload | $(LINUX_OUT)
 	@echo "--- Linux ---"
@@ -253,6 +313,28 @@ linux: toolchain radio-linux-payload | $(LINUX_OUT)
 		--enable RISCV_ISA_ZBC \
 		--enable BT \
 		--enable BT_BREDR \
+		--enable INPUT \
+		--disable INPUT_KEYBOARD \
+		--disable INPUT_MOUSE \
+		--disable INPUT_MOUSEDEV \
+		--enable INPUT_EVDEV \
+		--enable INPUT_MISC \
+		--enable INPUT_UINPUT \
+		--enable SWAP \
+		--enable SCSI \
+		--enable BLK_DEV_SD \
+		--enable USB_STORAGE \
+		--disable USB_UAS \
+		--disable ZRAM \
+		--disable ZRAM_BACKEND_LZO \
+		--disable ZRAM_DEF_COMP_LZORLE \
+		--disable ZRAM_WRITEBACK \
+		--disable ZRAM_MEMORY_TRACKING \
+		--disable ZRAM_MULTI_COMP \
+		--enable MODULES \
+		--enable MODULE_UNLOAD \
+		--enable FW_LOADER_COMPRESS \
+		--enable FW_LOADER_COMPRESS_XZ \
 		--enable SMP \
 		--set-val NR_CPUS 2 \
 		--enable ESP32S31_COPROC_CONTEXT \
@@ -261,29 +343,80 @@ linux: toolchain radio-linux-payload | $(LINUX_OUT)
 		--enable PREEMPT_VOLUNTARY \
 		--disable PREEMPT_NONE \
 		--disable PREEMPT \
+		--enable EPOLL \
+		--enable TIMERFD \
 		--enable DMATEST \
+		--enable HIGH_RES_TIMERS \
 		--enable HZ_100 \
 		--disable HZ_250 \
 		--disable HZ_300 \
 		--disable HZ_1000
-	@if [ "$(S31_WIFI_ONLY)" = "1" ]; then \
+	@if [ "$(S31_LEAN_RADIO)" = "1" ]; then \
 		$(LINUX_DIR)/scripts/config --file $(LINUX_OUT)/.config \
-			--disable BT_ESP32S31; \
-	else \
-		$(LINUX_DIR)/scripts/config --file $(LINUX_OUT)/.config \
-			--enable BT_ESP32S31; \
+			--set-val THREAD_SIZE_ORDER 1 \
+			--disable IPV6 \
+			--disable NET_DEVMEM \
+			--disable NET_SELFTESTS \
+			--disable ETHTOOL_NETLINK \
+			--disable CFG80211_CERTIFICATION_ONUS \
+			--disable SCSI_PROC_FS \
+			--disable USB_NET_DRIVERS \
+			--disable USB_DWC2_DUAL_ROLE \
+			--enable USB_DWC2_HOST \
+			--disable USB_GADGET \
+			--disable USB_CONFIGFS \
+			--disable USB_ROLE_SWITCH \
+			--disable HID \
+			--disable USB_HID \
+			--disable ETHERNET \
+			--disable STMMAC_ETH \
+			--disable MOTORCOMM_PHY \
+			--disable PHYLIB \
+			--disable FIXED_PHY \
+			--disable MDIO_BUS \
+			--disable PCS_XPCS \
+			--disable PPS \
+			--disable PTP_1588_CLOCK \
+			--disable CAN \
+			--disable I2C \
+			--disable SPI \
+			--disable MMC \
+			--disable SOUND \
+			--disable SND \
+			--disable IIO \
+			--disable HWMON \
+			--disable PWM \
+			--disable COUNTER \
+			--disable WATCHDOG \
+			--disable EXT4_FS \
+			--disable FAT_FS \
+			--disable VFAT_FS \
+			--disable NLS_CODEPAGE_437 \
+			--disable NLS_ISO8859_1 \
+			--disable ESP32S31_AXI_GDMA \
+			--disable CRYPTO_DEV_ESP32S31 \
+			--disable ESP32S31_SYSTEM_TIMERS \
+			--disable ESP32S31_GPTIMER; \
 	fi
+	$(LINUX_DIR)/scripts/config --file $(LINUX_OUT)/.config \
+		--enable BT_ESP32S31 --enable ESP32S31_WIFI
 	@if [ -n "$(LINUX_CMDLINE)" ]; then \
 		$(LINUX_DIR)/scripts/config --file $(LINUX_OUT)/.config \
 			--set-str CMDLINE "$(LINUX_CMDLINE)"; \
 	fi
 	$(MAKE) -C $(LINUX_DIR) O=$(LINUX_OUT) ARCH=riscv CROSS_COMPILE="$(CROSS_COMPILE)" olddefconfig
+	# Force the single radio link unit to observe the generated payload ABI.
+	rm -f \
+		$(LINUX_OUT)/drivers/platform/esp32s31-radio-*.o \
+		$(LINUX_OUT)/drivers/platform/.esp32s31-radio-*.cmd \
+		$(LINUX_OUT)/drivers/platform/esp32s31-radio.o \
+		$(LINUX_OUT)/drivers/platform/esp32s31-radio.ko
 	$(MAKE) -C $(LINUX_DIR) O=$(LINUX_OUT) ARCH=riscv CROSS_COMPILE="$(CROSS_COMPILE)" \
-		KCFLAGS="-march=$(S31_KERNEL_ISA) $(S31_KERNEL_FLAGS)" -j$(JOBS) $(LINUX_TARGET) dtbs
+		KCFLAGS="-march=$(S31_KERNEL_ISA) $(S31_KERNEL_FLAGS)" -j$(JOBS) $(LINUX_TARGET) modules dtbs
 	cp -v $(LINUX_OUT)/arch/riscv/boot/$(LINUX_TARGET) $(XIP_IMAGE)
 	@size=$$(stat -c%s $(XIP_IMAGE)); \
 	if [ $$size -gt $(LINUX_PARTITION_SIZE) ]; then \
-		echo "ERROR: $(LINUX_TARGET) ($$size bytes) overlaps persist at 0xB00000"; exit 1; \
+		echo "ERROR: $(LINUX_TARGET) ($$size bytes) overlaps persist at 0xB30000"; exit 1; \
 	fi
 	cp -v $(LINUX_OUT)/arch/riscv/boot/dts/espressif/esp32s31_generic.dtb $(FDT_DTB)
 
@@ -295,9 +428,10 @@ coremark: rootfs | $(COREMARK_OUT)
 
 # Keep this decimal because POSIX test(1) and truncate(1) do not accept the
 # partition table's 0x-prefixed value.
-ROOTFS_PARTITION_SIZE ?= 4194304
-PERSIST_PARTITION_SIZE ?= 1048576
-BUILDROOT_MAKE = $(MAKE) -C $(BUILDROOT_DIR) O=$(BUILDROOT_OUT) \
+ROOTFS_PARTITION_SIZE ?= 4390912
+PERSIST_PARTITION_SIZE ?= 655360
+BUILDROOT_MAKE = S31_LEAN_RADIO=$(S31_LEAN_RADIO) \
+	$(MAKE) -C $(BUILDROOT_DIR) O=$(BUILDROOT_OUT) \
 	BR2_EXTERNAL=$(BUILDROOT_EXTERNAL) BR2_DL_DIR=$(BUILDROOT_DL_DIR) \
 	S31_DTBO_DIR=$(LINUX_OUT)/arch/riscv/boot/dts/espressif
 
@@ -305,7 +439,18 @@ s31-pie-cases:
 	@$(MAKE) --no-print-directory idf-check
 	bash -c "source $(IDF_EXPORT) >/dev/null && $(CURDIR)/rootfs/gen_s31_pie_cases.sh $(CURDIR)/rootfs/s31_pie_cases.inc"
 
-rootfs: linux toolchain s31-pie-cases | $(BUILDROOT_OUT)
+btstack-source:
+	tools/fetch_btstack_source.sh $(BTSTACK_SOURCE_DIR)
+
+btstack-notices: btstack-source
+	tools/build_btstack_notice_bundle.sh $(BTSTACK_SOURCE_DIR) \
+		$(BUILD_DIR)/btstack-s31-notices.tar.xz
+
+.PHONY: lp-firmware
+lp-firmware: idf-check
+	bash -c 'source "$(IDF_EXPORT)" >/dev/null && $(MAKE) -C "$(CURDIR)/lp_firmware" IDF_PATH="$$IDF_PATH" stage'
+
+rootfs: linux toolchain s31-pie-cases btstack-source lp-firmware | $(BUILDROOT_OUT)
 	@echo "--- Buildroot rootfs ---"
 	$(BUILDROOT_MAKE) esp32s31_rootfs_defconfig
 	$(BUILDROOT_MAKE) toolchain-external-custom-rebuild
@@ -313,6 +458,10 @@ rootfs: linux toolchain s31-pie-cases | $(BUILDROOT_OUT)
 	$(BUILDROOT_MAKE) esp-simd-rebuild
 	$(BUILDROOT_MAKE) s31-tools-rebuild
 	$(BUILDROOT_MAKE) coremark-rebuild
+	# Rebuild the pinned, self-contained direct-HCI BTstack appliance after
+	# package patch or configuration changes.
+	$(BUILDROOT_MAKE) btstack-s31-dirclean
+	$(BUILDROOT_MAKE) btstack-s31
 	$(BUILDROOT_MAKE)
 	cp -v $(BUILDROOT_OUT)/images/rootfs.squashfs $(ROOTFS_IMG)
 	@ROOTFS_SIZE=$$(stat -c%s $(ROOTFS_IMG)); \
@@ -343,12 +492,14 @@ buildroot-clean:
 
 clean:
 	rm -rf $(BUILD_DIR)
+	$(MAKE) -C $(CURDIR)/radio_firmware clean
+	rm -rf $(RADIO_IDF_BUILD)
 
 fullclean: clean
 	@test ! -e $(TOOLCHAIN_DIR) || chmod -R u+w $(TOOLCHAIN_DIR)
 	rm -rf $(TOOLCHAIN_DIR)
 
-flash-image: uboot linux rootfs
+flash-image: uboot linux rootfs radio-fs
 	@echo "--- Merge official U-Boot flash layout ---"
 	bash -c "source $(IDF_EXPORT) >/dev/null && \
 		$(CURDIR)/tools/gen_esp_flash_image.sh $(S31_LAYOUT_CFG) $(BUILD_DIR)"
@@ -363,12 +514,29 @@ flash-dtb: linux
 	bash -c "source $(S31_LAYOUT_CFG) && source $(IDF_EXPORT) >/dev/null && \
 		esptool -p /dev/ttyUSB0 -b 2000000 write-flash \$$SLOT_DTB $(FDT_DTB)"
 
+flash-radio: radio-fs
+	bash -c "source $(S31_LAYOUT_CFG) && source $(IDF_EXPORT) >/dev/null && \
+		esptool -p /dev/ttyUSB0 -b 2000000 write-flash \$$SLOT_RADIO $(RADIO_FS_IMG)"
+
 flash-linux: linux
 	bash -c "source $(S31_LAYOUT_CFG) && source $(IDF_EXPORT) >/dev/null && \
 		esptool -p /dev/ttyUSB0 -b 2000000 write-flash \
 		\$$SLOT_DTB $(FDT_DTB) \$$SLOT_KERNEL $(XIP_IMAGE)"
 
 flash-rootfs: rootfs
+	bash -c "source $(S31_LAYOUT_CFG) && source $(IDF_EXPORT) >/dev/null && \
+		esptool -p /dev/ttyUSB0 -b 2000000 write-flash \$$SLOT_ROOTFS $(ROOTFS_IMG)"
+
+# Fast hardware iteration after an image has already passed its build target.
+# These targets never rebuild dependencies and fail before touching Flash when
+# the requested artifact is missing.
+flash-existing-radio:
+	@test -s "$(RADIO_FS_IMG)"
+	bash -c "source $(S31_LAYOUT_CFG) && source $(IDF_EXPORT) >/dev/null && \
+		esptool -p /dev/ttyUSB0 -b 2000000 write-flash \$$SLOT_RADIO $(RADIO_FS_IMG)"
+
+flash-existing-rootfs:
+	@test -s "$(ROOTFS_IMG)"
 	bash -c "source $(S31_LAYOUT_CFG) && source $(IDF_EXPORT) >/dev/null && \
 		esptool -p /dev/ttyUSB0 -b 2000000 write-flash \$$SLOT_ROOTFS $(ROOTFS_IMG)"
 
@@ -384,13 +552,14 @@ flash-bootloader: uboot
 		esptool -p /dev/ttyUSB0 -b 2000000 write-flash \
 		\$$SLOT_SPL $(SPL_APP_BIN) \$$SLOT_UBOOT_ITB $(UBOOT_ITB)"
 
-flash-all: uboot linux rootfs
+flash-all: uboot linux rootfs radio-fs
 	@echo "--- Flash complete U-Boot/Linux image (persist preserved) ---"
 	bash -c "source $(S31_LAYOUT_CFG) && source $(IDF_EXPORT) >/dev/null && \
 		esptool -p /dev/ttyUSB0 -b 2000000 write-flash \
 		\$$SLOT_SPL $(SPL_APP_BIN) \
 		\$$SLOT_UBOOT_ITB $(UBOOT_ITB) \
 		\$$SLOT_DTB $(FDT_DTB) \
+		\$$SLOT_RADIO $(RADIO_FS_IMG) \
 		\$$SLOT_KERNEL $(XIP_IMAGE) \
 		\$$SLOT_ROOTFS $(ROOTFS_IMG)"
 

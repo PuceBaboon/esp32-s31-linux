@@ -168,11 +168,13 @@ void s31_rtos_hard_tick(void)
 void s31_rtos_tick(void)
 {
 #ifdef S31_LINUX_SMODE
-	 extern void s31_linux_timers_tick(void);
+	extern void s31_linux_timers_tick(void);
+	extern void s31_radio_coex_worker_tick(void);
 
 	/* Callback execution is serialized under the blob gate in the radio
 	 * worker.  Time is read from the Linux bridge in s31_linux_timer.c. */
 	s31_linux_timers_tick();
+	s31_radio_coex_worker_tick();
 #else
 	s31_tick++;
 #endif
@@ -218,7 +220,6 @@ BaseType_t xTaskCreatePinnedToCore(void (*task_func)(void *), const char *name,
 	void *linux_task;
 	uint32_t stack_size;
 
-	(void)core_id; /* the S31 radio executes on the single Linux radio hart */
 	if (!task_func || !stack_depth)
 		return pdFAIL;
 	t = s31_rtos_malloc(sizeof(*t));
@@ -232,6 +233,7 @@ BaseType_t xTaskCreatePinnedToCore(void (*task_func)(void *), const char *name,
 	t->entry = task_func;
 	t->arg = param;
 	t->priority = prio;
+	t->core_id = core_id;
 	t->notify_context = s31_linux_sync_create();
 	t->suspend_context = s31_linux_sync_create();
 	if (!t->notify_context || !t->suspend_context) {
@@ -261,7 +263,8 @@ BaseType_t xTaskCreatePinnedToCore(void (*task_func)(void *), const char *name,
 	}
 	t->stack_size = stack_size;
 	linux_task = s31_linux_task_create(s31_rtos_task_entry, t->name,
-					   stack_size, t->stack_base, t, prio, t);
+					   stack_size, t->stack_base, t, prio, t,
+					   core_id);
 	if (!linux_task) {
 		s31_rtos_free(t->stack_base);
 		s31_linux_sync_destroy(t->notify_context);
@@ -480,10 +483,32 @@ void vTaskPrioritySet(void *task, UBaseType_t priority)
 	}
 }
 
-BaseType_t xTaskGetCoreID(void *task) { (void)task; return 0; }
+UBaseType_t uxTaskPriorityGet(void *task)
+{
+	struct s31_tcb *t = task ? task : s31_rtos_current();
+
+	return t ? t->priority : 0;
+}
+
+BaseType_t xTaskGetCoreID(void *task)
+{
+	struct s31_tcb *t = task ? task : s31_rtos_current();
+
+	return t ? t->core_id : 0;
+}
+
+BaseType_t xPortGetCoreID(void)
+{
+	return s31_linux_current_cpu();
+}
+
 void *xTaskGetCurrentTaskHandleForCore(BaseType_t core)
 {
-	return core == 0 ? s31_rtos_current() : NULL;
+	struct s31_tcb *t = s31_rtos_current();
+
+	if (!t || core != xPortGetCoreID())
+		return NULL;
+	return (t->core_id == 0x7fffffff || t->core_id == core) ? t : NULL;
 }
 
 void vTaskDelete(void *task)
