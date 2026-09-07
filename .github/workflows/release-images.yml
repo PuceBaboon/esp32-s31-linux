@@ -15,6 +15,7 @@ jobs:
     env:
       IDF_PATH: ${{ github.workspace }}/.esp-idf
       ESP_IDF_REF: a602e67b0bf9ee0806dc4e1df7afc9affedf5c33
+      S31_LEAN_RADIO: 0
       TOOLCHAIN_RELEASE_TAG: latest
 
     steps:
@@ -136,6 +137,18 @@ jobs:
             build/linux-6.18/drivers/platform/esp32s31-radio.ko | \
             grep -qE ' (esp_wifi_|esp_bt_|s31_radio_fw_abi_version)'
           grep -q '^CONFIG_ESP32S31_COPROC_CONTEXT=y$' build/linux-6.18/.config
+          for config in \
+            CONFIG_I2C_ESP32S31=y \
+            CONFIG_SPI_ESP32S31=y \
+            CONFIG_SPI_SPIDEV=y \
+            CONFIG_SND_SOC_ESP32S31_I2S=y \
+            CONFIG_PWM_ESP32S31_LEDC=y \
+            CONFIG_ESP32S31_PCNT=y \
+            CONFIG_STMMAC_ETH=y \
+            CONFIG_MMC_DW_PLTFM=y \
+            CONFIG_VFAT_FS=y; do
+            grep -q "^${config}$" build/linux-6.18/.config
+          done
           "$GITHUB_WORKSPACE/toolchain/riscv32-esp-linux-musl/bin/riscv32-esp-linux-musl-objdump" \
             -d build/buildroot/target/usr/lib/libc.so > build/release-libc-disassembly.txt
           ! grep -q 'esp\.' build/release-libc-disassembly.txt
