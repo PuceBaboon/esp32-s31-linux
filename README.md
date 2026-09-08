@@ -5,7 +5,7 @@ MMU RV32 Linux running natively on an ESP32-S31 microcontroller.
 Module tested: ESP32-S31-WROOM-3 E1H16R16V (ESP32-S31 Core Board/Korvo).
 
 <p align="center">
-  <img src="docs/bootlog.png"
+  <img src="https://raw.githubusercontent.com/GrieferPig/esp32-s31-linux-docs/main/bootlog.png"
        alt="Linux booted on an ESP32-S31 development board"
        width="850">
 </p>
@@ -60,7 +60,7 @@ can build and update a board with `make all`, `make persist`, and
 ### Peripheral Drivers
 
 > The table is a support-level summary. Interfaces, behavior and limitations
-> are defined in the [technical reference manual](docs/README.md).
+> are defined in the [technical reference manual](https://grieferpig.github.io/esp32-s31-linux-docs/).
 
 | Feature | Status |
 |---|---|
@@ -76,7 +76,7 @@ can build and update a board with `make all`, `make persist`, and
 | Timers | 🟡 Experimental |
 | Clock tree | 🟡 Experimental |
 | Security accelerators | 🟡 Experimental — AES, SHA, RSA and ECDH drivers |
-| LP subsystem & IPC | 🟡 Experimental — remoteproc and mailbox ABI v2 |
+| LP subsystem & IPC | 🟡 Experimental — remoteproc and mailbox ABI v1 |
 | PMP/APM | 🟠 WIP |
 
 
@@ -108,17 +108,17 @@ DAIs are implemented with partial board acceptance. Open AP+STA passes both
 data paths; connected BLE recovery passes three suspend cycles, and both I2S
 controllers pass bidirectional S16_LE stereo checks at 8/16/48 kHz after
 clock synchronization. Enterprise authentication remains unverified. See the
-[advanced Wi-Fi guide](docs/en/api-guides/wifi-advanced.md),
-[peripheral reference](docs/en/api-reference/peripherals/index.md) and
-[support matrix](docs/en/resources/support-matrix.md) for limits. Radio core
-ABI v4 requires a matching payload ABI v2; rebuild and deploy them together.
+[advanced Wi-Fi guide](https://grieferpig.github.io/esp32-s31-linux-docs/en/api-guides/wifi-advanced.html),
+[peripheral reference](https://grieferpig.github.io/esp32-s31-linux-docs/en/api-reference/peripherals/) and
+[support matrix](https://grieferpig.github.io/esp32-s31-linux-docs/en/resources/support-matrix.html) for limits. Radio core
+ABI v1 requires a matching payload ABI v1; rebuild and deploy them together.
 
 ## Build Instructions
 
-Refer to the [Build Instructions](docs/en/get-started/build-from-source.md).
+Refer to the [Build Instructions](https://grieferpig.github.io/esp32-s31-linux-docs/en/get-started/build-from-source.html).
 
 The full document index is the
-[ESP32-S31 Linux Technical Reference Manual](docs/README.md).
+[ESP32-S31 Linux Technical Reference Manual](https://grieferpig.github.io/esp32-s31-linux-docs/).
 
 ## Standard Linux userspace
 
@@ -127,21 +127,21 @@ drivers: `wpa_supplicant`/`wpa_cli` for Wi-Fi, a BTstack A2DP sink plus BLE
 GATT peripheral over `/dev/s31-hci` for Bluetooth, and libgpiod 2.x for GPIO
 character devices. Its direct H4 transport is self-contained; BlueZ and its
 D-Bus/GLib audio-control dependency chain are not selected. See
-[Standard userspace interfaces](docs/en/api-reference/userspace/index.md).
+[Standard userspace interfaces](https://grieferpig.github.io/esp32-s31-linux-docs/en/api-reference/userspace/).
 
 Run `esp32-config` for the `dialog`-based configuration interface. Persistent
 policy lives in `/etc/esp32-conf`, while radio and GPIO operations continue
 to use the standard Linux tools above. See the
-[esp32-config reference](docs/en/resources/configuration.md).
+[esp32-config reference](https://grieferpig.github.io/esp32-s31-linux-docs/en/resources/configuration.html).
 
 ## Architecture notes
 
 The HP harts use native CLIC interrupt delivery. Linux runs in S-mode with
 native S-mode IPI and SYSTIMER paths, while OpenSBI retains M-mode boot, HSM and
 reset services. Linux 6.18 executes its XIP text from flash and keeps writable
-state in RAM. See [System architecture](docs/en/api-reference/system/overview.md),
-[Interrupts and SMP](docs/en/api-reference/system/interrupts-smp.md), and
-[Boot and storage](docs/en/api-reference/system/boot-chain.md) for the current contracts.
+state in RAM. See [System architecture](https://grieferpig.github.io/esp32-s31-linux-docs/en/api-reference/system/overview.html),
+[Interrupts and SMP](https://grieferpig.github.io/esp32-s31-linux-docs/en/api-reference/system/interrupts-smp.html), and
+[Boot and storage](https://grieferpig.github.io/esp32-s31-linux-docs/en/api-reference/system/boot-chain.html) for the current contracts.
 
 ## FAQ
 

@@ -4,7 +4,7 @@ IDF_PATH ?= $(HOME)/.espressif/master/esp-idf
 IDF_PY := $(IDF_PATH)/tools/idf.py
 BUILD_DIR := $(CURDIR)/build
 LP_OUTPUT := $(BUILD_DIR)/esp-idf/main/s31_lp_main/s31_lp_main
-STAGE_DIR := $(CURDIR)/../buildroot-external/board/esp32-s31/overlay/lib/firmware/esp32s31
+STAGE_DIR := $(CURDIR)/../../buildroot-external/board/esp32-s31/overlay/lib/firmware/esp32s31
 
 .PHONY: all stage clean
 

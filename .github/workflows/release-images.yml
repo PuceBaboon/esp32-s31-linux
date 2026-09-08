@@ -56,7 +56,7 @@ jobs:
           grep -q '  packages/gcc/git-0dbf5849/0001-xesploop.patch$' "$prefix/s31-patch-sha256.txt"
           grep -q '  packages/gcc/git-0dbf5849/0002-riscv-xesploop-reject-early-exit-loops.patch$' "$prefix/s31-patch-sha256.txt"
           mkdir -p build/toolchain-verify
-          python3 -c 'from pathlib import Path; from scripts.wait_s31_toolchain_and_test import verify_compiler, verify_libc_scalar; p=Path("toolchain/riscv32-esp-linux-musl"); w=Path("build/toolchain-verify"); verify_compiler(p, w, Path.cwd()); verify_libc_scalar(p, w, Path.cwd())'
+          python3 -c 'from pathlib import Path; from tools.wait_s31_toolchain_and_test import verify_compiler, verify_libc_scalar; p=Path("toolchain/riscv32-esp-linux-musl"); w=Path("build/toolchain-verify"); verify_compiler(p, w, Path.cwd()); verify_libc_scalar(p, w, Path.cwd())'
           libc="$prefix/$target/sysroot/usr/lib/libc.so"
           "$prefix/bin/$target-objdump" -d "$libc" > build/toolchain-verify/libc-disassembly.txt
           for symbol in memcpy memchr memrchr memcmp strcmp; do
@@ -124,7 +124,7 @@ jobs:
             -o -name 'libgio-2.0.so*' -o -name 'libglib-2.0.so*' \
             -o -name 'libgmodule-2.0.so*' -o -name 'libgobject-2.0.so*' \
             -o -name 'libgthread-2.0.so*' \) -print)"
-          test -f radio_firmware/idf_deps/build-radio/build.ninja
+          test -f firmware/radio/idf_deps/build-radio/build.ninja
           test -s build/linux-6.18/drivers/platform/esp32s31-radio.ko
           test -s build/esp32s31-radio-fw-v1.o
           grep -q '^CONFIG_ESP32S31_RADIO_SMODE_DRIVER=m$' build/linux-6.18/.config

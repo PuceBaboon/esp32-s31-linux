@@ -32,7 +32,7 @@ BUILD_DIR := $(CURDIR)/build
 OPENSBI_DIR := $(CURDIR)/opensbi-esp32-s31
 LINUX_DIR := $(CURDIR)/linux-esp32-s31
 UBOOT_DIR := $(CURDIR)/u-boot-esp32-s31
-RADIO_IDF_DEPS_DIR := $(CURDIR)/radio_firmware/idf_deps
+RADIO_IDF_DEPS_DIR := $(CURDIR)/firmware/radio/idf_deps
 BUILDROOT_DIR := $(CURDIR)/buildroot
 BUILDROOT_EXTERNAL := $(CURDIR)/buildroot-external
 
@@ -126,7 +126,7 @@ toolchain: | $(BUILD_DIR)
 	"$(CC)" --version | head -n 1
 
 toolchain-source:
-	python3 $(CURDIR)/build_linux_toolchain.py --ct-ng-dir "$(CROSSTOOL_NG_DIR)" --jobs "$(JOBS)" --force
+	python3 $(CURDIR)/tools/build_linux_toolchain.py --ct-ng-dir "$(CROSSTOOL_NG_DIR)" --jobs "$(JOBS)" --force
 
 # The FIT's fixed 0x400 external-data position places OpenSBI at the
 # 64-byte-aligned NOR XIP address 0x40000400.  Only writable state lives in
@@ -253,7 +253,7 @@ LINUX_CMDLINE ?= earlycon=esp32s31uart,mmio,0x2038a000,115200 console=ttyS0,1152
 LINUX_PARTITION_SIZE := 6488064
 
 radio-linux-payload: radio-idf-deps
-	$(MAKE) -C $(CURDIR)/radio_firmware IDF_ROOT="$(IDF_ROOT)" \
+	$(MAKE) -C $(CURDIR)/firmware/radio IDF_ROOT="$(IDF_ROOT)" \
 		IDF_DEPS_DIR="$(RADIO_IDF_DEPS_DIR)" \
 		S31_WIFI_ONLY=0 linux-kbuild
 
@@ -288,10 +288,10 @@ radio-fs: linux rootfs
 		$(BUILD_DIR)/radiofs-staging/firmware/*.o
 	cp $(LINUX_OUT)/arch/riscv/boot/dts/espressif/esp32s31-overlay-radio-*.dtbo \
 		$(BUILD_DIR)/radiofs-staging/overlays/
-	cp radio_firmware/idf_deps/sdkconfig.defaults \
-		radio_firmware/idf_deps/sdkconfig.radio.defaults \
+	cp firmware/radio/idf_deps/sdkconfig.defaults \
+		firmware/radio/idf_deps/sdkconfig.radio.defaults \
 		$(BUILD_DIR)/radiofs-staging/config/
-	cp radio_firmware/RADIO_BUNDLE_LICENSES.md $(BUILD_DIR)/radiofs-staging/
+	cp firmware/radio/RADIO_BUNDLE_LICENSES.md $(BUILD_DIR)/radiofs-staging/
 	$(BUILDROOT_OUT)/host/bin/mksquashfs $(BUILD_DIR)/radiofs-staging \
 		$(RADIO_FS_IMG) -noappend -all-root -processors $(JOBS) -b 64K -comp xz
 	@size=$$(stat -c%s $(RADIO_FS_IMG)); \
@@ -448,7 +448,7 @@ btstack-notices: btstack-source
 
 .PHONY: lp-firmware
 lp-firmware: idf-check
-	bash -c 'source "$(IDF_EXPORT)" >/dev/null && $(MAKE) -C "$(CURDIR)/lp_firmware" IDF_PATH="$$IDF_PATH" stage'
+	bash -c 'source "$(IDF_EXPORT)" >/dev/null && $(MAKE) -C "$(CURDIR)/firmware/lp" IDF_PATH="$$IDF_PATH" stage'
 
 rootfs: linux toolchain s31-pie-cases btstack-source lp-firmware | $(BUILDROOT_OUT)
 	@echo "--- Buildroot rootfs ---"
@@ -492,7 +492,7 @@ buildroot-clean:
 
 clean:
 	rm -rf $(BUILD_DIR)
-	$(MAKE) -C $(CURDIR)/radio_firmware clean
+	$(MAKE) -C $(CURDIR)/firmware/radio clean
 	rm -rf $(RADIO_IDF_BUILD)
 
 fullclean: clean

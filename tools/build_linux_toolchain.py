@@ -111,7 +111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ct-ng-dir",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "crosstool-NG",
+        default=Path(__file__).resolve().parents[2] / "crosstool-NG",
         help="crosstool-NG checkout (default: ../crosstool-NG)",
     )
     parser.add_argument(
@@ -133,7 +133,7 @@ def main() -> int:
     if args.jobs < 1:
         raise SystemExit("--jobs must be at least 1")
 
-    repo_root = Path(__file__).resolve().parent
+    repo_root = Path(__file__).resolve().parent.parent
     ctng_dir = args.ct_ng_dir.resolve()
     config_source = repo_root / "configs" / f"{TARGET}.config"
     kernel_dir = repo_root / "linux-esp32-s31"
@@ -227,7 +227,7 @@ def main() -> int:
     run([str(gcc), "--version"], cwd=work_dir)
     verification_dir = work_dir / "s31-patch-verification"
     verification_dir.mkdir(exist_ok=True)
-    from scripts.wait_s31_toolchain_and_test import verify_compiler
+    from wait_s31_toolchain_and_test import verify_compiler
 
     verify_compiler(prefix, verification_dir, repo_root)
 
@@ -248,7 +248,7 @@ def main() -> int:
 
     marker = prefix / ".source-build"
     marker.write_text(
-        "Built locally by build_linux_toolchain.py\n"
+        "Built locally by tools/build_linux_toolchain.py\n"
         f"config_sha256={hashlib.sha256(generated_config.read_bytes()).hexdigest()}\n"
         f"ct_ng_dir={ctng_dir}\n"
     )

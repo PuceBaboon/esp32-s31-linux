@@ -68,15 +68,15 @@ idf-check:
 # the small set of remaining Linux OS-adapter entry points.
 linux-radio: idf-check linux_radio.resolved.o linux_radio.kbuild.o linux-radio-undefined.txt
 
-LINUX_RADIO_FW ?= ../build/esp32s31-radio-fw-v1.o
-LINUX_RADIO_IMPORTS ?= ../linux-esp32-s31/drivers/platform/esp32s31-radio-imports.S
+LINUX_RADIO_FW ?= ../../build/esp32s31-radio-fw-v1.o
+LINUX_RADIO_IMPORTS ?= ../../linux-esp32-s31/drivers/platform/esp32s31-radio-imports.S
 LINUX_RADIO_LINKED_IMPORTS ?= linux-radio-linked-imports.txt
 RADIO_COEX_PRINTF_OBJ := s31_coex_printf.o
 
 linux-kbuild: idf-check linux_radio.kbuild.o
 	mkdir -p $(dir $(LINUX_RADIO_FW)) $(dir $(LINUX_RADIO_IMPORTS))
 	cp -f linux_radio.kbuild.o $(LINUX_RADIO_FW)
-	python3 ../tools/gen_s31_radio_imports.py \
+	python3 ../../tools/gen_s31_radio_imports.py \
 		--nm $(ESP_TOOLS)/bin/riscv32-esp-elf-nm \
 		--linked-symbols $(LINUX_RADIO_LINKED_IMPORTS) \
 		linux_radio.kbuild.o $(LINUX_RADIO_IMPORTS)
@@ -84,7 +84,7 @@ linux-kbuild: idf-check linux_radio.kbuild.o
 $(LINUX_NET80211): $(IDF_NET80211)
 	cp $< $@
 
-linux_radio.raw.o: radio_stack.linux.o nofreertos_link.txt boot_flags.txt boot_linkpath.txt $(LINUX_NET80211) $(S31RTOS_LINUX_OBJS) $(RADIO_COEX_PRINTF_OBJ) Makefile ../tools/demote_riscv_module_tls.py
+linux_radio.raw.o: radio_stack.linux.o nofreertos_link.txt boot_flags.txt boot_linkpath.txt $(LINUX_NET80211) $(S31RTOS_LINUX_OBJS) $(RADIO_COEX_PRINTF_OBJ) Makefile ../../tools/demote_riscv_module_tls.py
 	$(ESP_CC) -nostdlib -r -Wl,--gc-sections $(HEAP_WRAP_FLAGS) $(LINUX_WRAP_FLAGS) \
 		-Wl,--undefined=s31_radio_stack_task \
 		-Wl,--undefined=s31_radio_wifi_control_task \
@@ -115,7 +115,7 @@ linux_radio.raw.o: radio_stack.linux.o nofreertos_link.txt boot_flags.txt boot_l
 		radio_stack.linux.o $(S31RTOS_LINUX_OBJS) $(RADIO_COEX_PRINTF_OBJ) \
 		$(LINUX_NOFREERTOS_LINK) \
 		-L$(PICOLIBC_LIB) -L$(PICOLIBC_GCC) -lc -lm -lgcc -o $@
-	python3 ../tools/demote_riscv_module_tls.py $@
+	python3 ../../tools/demote_riscv_module_tls.py $@
 
 linux_radio.exposed.o: linux_radio.raw.o
 	$(ESP_TOOLS)/bin/riscv32-esp-elf-objcopy \

@@ -61,9 +61,9 @@ cp "$radio_firmware" "$staging/firmware/"
 for overlay in radio-wifi radio-bluetooth radio-combo; do
 	cp "${dtbo_dir}/esp32s31-overlay-${overlay}.dtbo" "$staging/overlays/"
 done
-cp "${project_dir}/radio_firmware/idf_deps/sdkconfig.defaults" "$staging/config/"
-cp "${project_dir}/radio_firmware/idf_deps/sdkconfig.radio.defaults" "$staging/config/"
-cp "${project_dir}/radio_firmware/RADIO_BUNDLE_LICENSES.md" "$staging/"
+cp "${project_dir}/firmware/radio/idf_deps/sdkconfig.defaults" "$staging/config/"
+cp "${project_dir}/firmware/radio/idf_deps/sdkconfig.radio.defaults" "$staging/config/"
+cp "${project_dir}/firmware/radio/RADIO_BUNDLE_LICENSES.md" "$staging/"
 cp "${project_dir}/build/radio.sqfs" "$staging/"
 printf 'distribution-mode=%s\n' "$mode" >"$staging/MANIFEST"
 printf 'kernel-release=%s\n' \

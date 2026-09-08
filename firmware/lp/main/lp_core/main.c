@@ -10,7 +10,7 @@
 #include "hal/clk_tree_ll.h"
 #include "hal/rtc_timer_ll.h"
 
-#include "../../../shared/s31_lp_protocol.h"
+#include "../../../../shared/s31_lp_protocol.h"
 
 #define S31_LP_SYS_STORE0 (*(volatile uint32_t *)0x2070002cU)
 #define S31_LP_SYS_STORE3 (*(volatile uint32_t *)0x20700038U)

@@ -5,7 +5,7 @@
 #include <string.h>
 #include <time.h>
 #include "esp_eap_client.h"
-#include "../linux-esp32-s31/include/linux/esp32s31-radio-control.h"
+#include "../../linux-esp32-s31/include/linux/esp32s31-radio-control.h"
 #include "esp_bt.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -36,7 +36,7 @@ time_t __wrap_time(time_t *result)
 		*result = now;
 	return now;
 }
-const uint32_t s31_radio_fw_abi_version = 2;
+const uint32_t s31_radio_fw_abi_version = 1;
 extern void s31_radio_wifi_control_complete(int result);
 extern void s31_radio_wifi_ap_station(const uint8_t *mac, bool joined);
 extern void s31_radio_wifi_receive_aux(uint8_t interface, const uint8_t *frame,
