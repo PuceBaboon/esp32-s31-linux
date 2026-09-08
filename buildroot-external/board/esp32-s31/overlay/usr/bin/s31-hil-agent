@@ -466,6 +466,15 @@ lp_core_tests()
 	fi
 	reply=""
 	reply_log=""
+	# The misc-device FIFO intentionally records every LP response, including
+	# suspend RPC traffic.  A power-wake case run before this test can therefore
+	# leave valid stale responses ahead of the raw-message reply.  Drain only
+	# already queued words with a bounded read before issuing the test request;
+	# the first empty read times out and prevents an unbounded wait.
+	drained=0
+	while [ "$drained" -lt 64 ] && bounded_run 1 s31-lpctl recv; do
+		drained=$((drained + 1))
+	done
 	if bounded_run 3 s31-lpctl send 0x12345678; then
 		for _lp_read in 1 2 3 4; do
 			if ! bounded_run 3 s31-lpctl recv; then
