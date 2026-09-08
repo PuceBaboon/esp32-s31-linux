@@ -64,7 +64,7 @@ jobs:
           done
           ! grep -q 'esp\.' build/toolchain-verify/libc-disassembly.txt
 
-      - name: Build all images
+      - name: Build full image with radio bundle
         run: |
           source "$IDF_PATH/export.sh"
           make TOOLCHAIN_RELEASE_TAG="$TOOLCHAIN_RELEASE_TAG" \
@@ -97,6 +97,7 @@ jobs:
           test -s build/rootfs.sqfs
           test -s build/s31_full_flash.bin
           test -s build/coremark/coremark.exe
+          python3 -c 'from pathlib import Path; radio = Path("build/radio.sqfs").read_bytes(); full = Path("build/s31_full_flash.bin").read_bytes(); offset = 0x310000; assert full[offset:offset + len(radio)] == radio, "radio bundle is not embedded at SLOT_RADIO"'
           test ! -e bootloader
           test "$(cat build/btstack-source/.s31-btstack-version)" = \
             431d58d5613fd8fae38afe50282b25302de84bf7
@@ -154,13 +155,6 @@ jobs:
           ! grep -q 'esp\.' build/release-libc-disassembly.txt
           echo "All core artifacts verified OK"
 
-      - name: Package BTstack notices
-        run: |
-          make btstack-notices
-          test -s build/btstack-s31-notices.tar.xz
-          tar -tJf build/btstack-s31-notices.tar.xz | \
-            grep -q '^btstack-s31-notices/BTSTACK_LICENSE$'
-
       - name: Prepare release metadata
         id: release
         env:
@@ -181,13 +175,5 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" \
             build/s31_full_flash.bin \
-            build/spl_app.bin \
-            build/u-boot.itb \
-            build/esp32s31_generic.dtb \
-            build/radio.sqfs \
-            build/xipImage \
-            build/rootfs.sqfs \
-            build/btstack-s31-notices.tar.xz \
-            build/coremark/coremark.exe \
             --title "$RELEASE_TITLE" \
-            --notes "$FLASH_COMMAND"$'\n\n''Bluetooth uses BTstack under its personal/non-commercial license. Commercial use requires a separate BlueKitchen license; see btstack-s31-notices.tar.xz.'
+            --notes "$FLASH_COMMAND"
